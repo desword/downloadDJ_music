@@ -1,0 +1,343 @@
+*Thinking...*
+
+> The user wants me to design a detailed implementation plan for a web application that wraps yt-dlp's batch download functionality. They want it broken down into step-by-step implementation tasks that can be handed off to a multi-agent system. The key requirements are:
+> 
+> 1. Input field for playlist URL
+> 2. Configurable download path with a default root directory
+> 3. Format selection (mp3/wav, default wav)
+> 4. Should be deployable on a Windows server
+> 5. Should be as simple as double-clicking an executable to launch
+> 
+> Let me design a comprehensive implementation plan with clear steps, covering backend (which would handle yt-dlp execution), frontend (web UI), and packaging (into a standalone executable).
+> 
+> 
+> I'm settling on Python with Flask for the backend since yt-dlp is already Python-based, a lightweight HTML/CSS/JavaScript frontend for the UI, and PyInstaller to bundle everything into a single Windows executable that can be launched directly.
+
+# SoundCloud 歌单批量下载器 — 详细实现步骤
+
+## 整体架构
+
+```
+项目结构:
+soundcloud-downloader/
+├── backend/
+│   ├── app.py              # FastAPI 主程序
+│   ├── downloader.py       # yt-dlp 下载核心逻辑
+│   ├── config.py           # 配置管理（默认路径等）
+│   └── requirements.txt    # Python 依赖
+├── frontend/
+│   └── index.html          # 单页面前端界面
+├── bin/
+│   ├── ffmpeg.exe          # 内置 ffmpeg
+│   └── ffprobe.exe         # 内置 ffprobe
+├── config.json             # 用户配置文件（默认路径等）
+├── run.bat                 # 双击启动脚本
+└── start.py                # 启动入口（启动后端+打开浏览器）
+```
+
+---
+
+## 步骤一：后端基础框架搭建
+
+**目标：** 创建 FastAPI 后端服务，能在本地启动 HTTP 服务。
+
+**交付物：** `backend/app.py`、`backend/requirements.txt`、`start.py`
+
+**具体任务：**
+
+1. 初始化 FastAPI 应用，监听 `localhost:18899`（避免常见端口冲突）
+2. 配置 CORS 允许本地前端访问
+3. 添加一个静态文件挂载点，用于托管前端 `index.html`
+4. `start.py` 中实现：启动 uvicorn 服务 → 自动用默认浏览器打开 `http://localhost:18899`
+5. `requirements.txt` 内容：fastapi、uvicorn、yt-dlp
+
+```txt
+# requirements.txt
+fastapi==0.115.0
+uvicorn==0.30.0
+yt-dlp==2025.5.22
+```
+
+**验收标准：** 运行 `python start.py` 后浏览器自动打开页面，显示空白页面但服务正常响应。
+
+---
+
+## 步骤二：配置管理模块
+
+**目标：** 管理用户的默认下载路径等配置，持久化到 `config.json`。
+
+**交付物：** `backend/config.py`、`config.json`
+
+**具体任务：**
+
+1. 定义默认配置结构：
+
+```json
+{
+  "default_download_path": "D:\\Music\\SoundCloud",
+  "default_format": "wav",
+  "sleep_interval": 2
+}
+```
+
+2. 实现 `load_config()` — 读取 config.json，不存在则创建默认配置
+3. 实现 `save_config(config)` — 保存配置到 config.json
+4. 在 `app.py` 中添加两个 API：
+   - `GET /api/config` — 返回当前配置
+   - `PUT /api/config` — 更新配置
+
+**验收标准：** 调用 API 能读取和修改配置，重启后配置持久化。
+
+---
+
+## 步骤三：下载核心逻辑模块
+
+**目标：** 封装 yt-dlp 调用逻辑，支持指定 URL、路径、格式进行下载。
+
+**交付物：** `backend/downloader.py`
+
+**具体任务：**
+
+1. 实现 `fetch_playlist_info(url)` 函数：
+   - 调用 yt-dlp 的 `--flat-playlist` 模式
+   - 返回歌单名称、曲目列表（标题、时长、作者）
+   - 用于前端预览歌单内容
+
+2. 实现 `start_download(url, download_path, audio_format)` 函数：
+   - 构建 yt-dlp 参数，等价于：
+     ```
+     yt-dlp -x --audio-format {format} 
+       -o "{download_path}/{playlist_title}/%(playlist_index)03d - %(title)s.%(ext)s" 
+       --embed-metadata --sleep-interval 2 
+       --ffmpeg-location ./bin 
+       "{url}"
+     ```
+   - 使用 yt-dlp 的 Python API（`yt_dlp.YoutubeDL`）而非 subprocess
+   - 通过回调函数 `progress_hook` 捕获下载进度
+
+3. 实现进度状态管理：
+   - 维护一个全局字典存储当前任务状态：`{status, current_track, total_tracks, percent, error}`
+   - 下载过程中实时更新该字典
+
+**核心代码结构：**
+
+```python
+import yt_dlp
+
+def start_download(url, download_path, audio_format, progress_state):
+    output_template = f"{download_path}/%(playlist_title)s/%(playlist_index)03d - %(title)s.%(ext)s"
+    
+    def progress_hook(d):
+        if d['status'] == 'downloading':
+            progress_state['percent'] = d.get('_percent_str', '0%')
+        elif d['status'] == 'finished':
+            progress_state['current_track'] += 1
+
+    ydl_opts = {
+        'format': 'bestaudio/best',
+        'extract_audio': True,
+        'audio_format': audio_format,
+        'outtmpl': output_template,
+        'embed_metadata': True,
+        'sleep_interval': 2,
+        'ffmpeg_location': './bin',
+        'progress_hooks': [progress_hook],
+    }
+
+    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+        ydl.download([url])
+```
+
+**验收标准：** 调用函数能成功下载一个歌单，文件按格式保存到指定路径。
+
+---
+
+## 步骤四：后端 API 接口层
+
+**目标：** 暴露 RESTful API 供前端调用。
+
+**交付物：** 更新 `backend/app.py`
+
+**具体任务：**
+
+1. `POST /api/playlist/info` — 获取歌单信息预览
+   - 请求体：`{ "url": "https://soundcloud.com/..." }`
+   - 响应：`{ "title": "kanaAfro", "track_count": 2, "tracks": [...] }`
+
+2. `POST /api/download/start` — 启动下载任务
+   - 请求体：`{ "url": "...", "download_path": "D:\\Music", "format": "wav" }`
+   - 在后台线程中执行下载，立即返回 `{ "task_id": "xxx", "status": "started" }`
+
+3. `GET /api/download/progress` — 轮询下载进度
+   - 响应：`{ "status": "downloading", "current_track": 1, "total_tracks": 2, "percent": "45.3%" }`
+
+4. `POST /api/download/cancel` — 取消当前下载任务
+
+5. `POST /api/path/validate` — 验证路径是否存在/可写
+   - 请求体：`{ "path": "D:\\Music" }`
+   - 响应：`{ "valid": true }` 或 `{ "valid": false, "reason": "路径不存在" }`
+
+**验收标准：** 用 Postman 或 curl 调用所有接口均正常工作。
+
+---
+
+## 步骤五：前端界面实现
+
+**目标：** 单 HTML 文件实现完整交互界面。
+
+**交付物：** `frontend/index.html`
+
+**界面布局（从上到下）：**
+
+1. **标题栏：** "SoundCloud 歌单下载器"
+
+2. **歌单链接输入区：**
+   - 输入框：placeholder 显示 "请输入 SoundCloud 歌单链接"
+   - "解析歌单"按钮：点击后调用 `/api/playlist/info`，展示歌单内容预览
+
+3. **歌单预览区（解析成功后显示）：**
+   - 显示歌单名称、曲目数量
+   - 列表展示每首歌的序号、标题、作者
+
+4. **下载配置区：**
+   - 下载路径输入框：默认值从 `/api/config` 获取，用户可修改
+   - 格式选择：下拉框或单选按钮，选项为 `wav`（默认）和 `mp3`
+   - "保存为默认配置"按钮：将当前路径和格式保存到配置
+
+5. **操作区：**
+   - "开始下载"按钮
+   - "取消下载"按钮（下载中显示）
+
+6. **进度区（下载中显示）：**
+   - 进度条
+   - 文字：正在下载第 x/y 首
+   - 完成后显示"下载完成！文件保存在：xxx"
+
+**技术要求：**
+- 纯 HTML + CSS + JS，不依赖框架
+- 使用 Tailwind CSS CDN 做样式
+- 通过 fetch 调用后端 API
+- 进度通过 setInterval 每秒轮询
+
+**验收标准：** 页面能完成完整的输入 → 解析 → 配置 → 下载 → 查看进度流程。
+
+---
+
+## 步骤六：内置 ffmpeg 二进制文件
+
+**目标：** 将 ffmpeg 打包进项目，用户无需额外安装。
+
+**交付物：** `bin/ffmpeg.exe`、`bin/ffprobe.exe`
+
+**具体任务：**
+
+1. 从 https://github.com/BtbN/FFmpeg-Builds/releases 下载 `ffmpeg-master-latest-win64-gpl.zip`
+2. 解压后取出 `bin/ffmpeg.exe` 和 `bin/ffprobe.exe`（合计约 200MB）
+3. 放入项目的 `bin/` 目录
+4. 在 `downloader.py` 中通过 `ffmpeg_location` 参数指向该目录
+
+**验收标准：** 在没有全局安装 ffmpeg 的 Windows 机器上能正常转码。
+
+---
+
+## 步骤七：一键启动脚本
+
+**目标：** 用户双击即可启动整个应用。
+
+**交付物：** `run.bat`、`start.py`
+
+**run.bat 内容：**
+
+```bat
+@echo off
+cd /d "%~dp0"
+python start.py
+pause
+```
+
+**start.py 内容：**
+
+```python
+import subprocess
+import webbrowser
+import time
+import os
+
+def main():
+    os.chdir(os.path.dirname(os.path.abspath(__file__)))
+    
+    # 启动后端服务
+    server = subprocess.Popen(
+        ["python", "-m", "uvicorn", "backend.app:app", "--host", "127.0.0.1", "--port", "18899"],
+    )
+    
+    # 等待服务启动
+    time.sleep(2)
+    
+    # 打开浏览器
+    webbrowser.open("http://127.0.0.1:18899")
+    
+    # 保持运行
+    try:
+        server.wait()
+    except KeyboardInterrupt:
+        server.terminate()
+
+if __name__ == "__main__":
+    main()
+```
+
+**验收标准：** 双击 `run.bat`，浏览器自动打开应用页面，可正常使用。
+
+---
+
+## 步骤八：环境打包与部署脚本
+
+**目标：** 让目标 Windows 服务器能一键部署，无需手动配置 Python 环境。
+
+**交付物：** `install.bat`、`README.md`
+
+**方案 A：要求目标机器有 Python（轻量方案）**
+
+`install.bat`：
+
+```bat
+@echo off
+cd /d "%~dp0"
+pip install -r backend/requirements.txt
+echo 安装完成！双击 run.bat 启动程序。
+pause
+```
+
+**方案 B：完全免安装（PyInstaller 打包成单个 exe）**
+
+添加 `build.bat`：
+
+```bat
+@echo off
+pip install pyinstaller
+pyinstaller --onefile --add-data "frontend;frontend" --add-data "bin;bin" --add-data "config.json;." start.py --name "SoundCloudDownloader"
+echo 打包完成！exe 在 dist/ 目录下。
+pause
+```
+
+打包后只需将 `dist/SoundCloudDownloader.exe` + `bin/` + `frontend/` + `config.json` 拷贝到目标服务器，双击 exe 即可运行。
+
+**验收标准：** 在一台全新的 Windows 机器上，按照 README 操作后能成功运行应用。
+
+---
+
+## 实现顺序总结
+
+| 步骤 | 模块 | 依赖 | 预计工作量 |
+|------|------|------|-----------|
+| 一 | 后端基础框架 | 无 | 小 |
+| 二 | 配置管理 | 步骤一 | 小 |
+| 三 | 下载核心逻辑 | 步骤一 | 中 |
+| 四 | API 接口层 | 步骤二、三 | 中 |
+| 五 | 前端界面 | 步骤四 | 中 |
+| 六 | 内置 ffmpeg | 步骤三 | 小（下载即可） |
+| 七 | 启动脚本 | 步骤一、五 | 小 |
+| 八 | 打包部署 | 全部 | 中 |
+
+每个步骤独立可测试，适合交给多 agent 系统逐个实现和验证。
