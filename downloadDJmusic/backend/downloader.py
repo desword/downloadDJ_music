@@ -5,6 +5,7 @@ import re
 import shutil
 import time
 import threading
+import tempfile
 import urllib.request
 from typing import Any, Dict, List, Optional
 
@@ -17,6 +18,28 @@ BIN_DIR = os.path.join(
     os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
     "bin",
 )
+
+
+def _load_download_index(directory: str) -> Dict[str, str]:
+    try:
+        with open(os.path.join(directory, '.dj-deck-downloads.json'), encoding='utf-8') as f:
+            data = json.load(f)
+        return {str(k): v for k, v in data.items() if isinstance(v, str) and os.path.basename(v) == v}
+    except (OSError, ValueError, AttributeError):
+        return {}
+
+
+def _save_download_index(directory: str, index: Dict[str, str]) -> None:
+    temp_path = None
+    try:
+        os.makedirs(directory, exist_ok=True)
+        with tempfile.NamedTemporaryFile(mode='w', encoding='utf-8', dir=directory, delete=False) as f:
+            temp_path = f.name
+            json.dump(index, f, ensure_ascii=False)
+        os.replace(temp_path, os.path.join(directory, '.dj-deck-downloads.json'))
+    except OSError:
+        if temp_path and os.path.exists(temp_path):
+            os.unlink(temp_path)
 
 # 用于构建 playlist_items 字符串（支持范围格式 "1-5,7,9-11"）
 def _build_playlist_items(indices: List[int]) -> str:
@@ -368,6 +391,7 @@ def start_download(
                 if os.path.isdir(pl_dir_path):
                     for fname in os.listdir(pl_dir_path):
                         existing_files.add(fname)
+                download_index = _load_download_index(pl_dir_path)
 
                 # full 提取获取曲目标题（ignoreerrors 让 DRM 曲目返回 None）
                 full_extract_opts: Dict[str, Any] = {
@@ -378,6 +402,7 @@ def start_download(
                     "extract_flat": False,
                 }
                 full_titles: Dict[int, str] = {}  # {index: title}
+                full_ids: Dict[int, str] = {}
                 try:
                     with yt_dlp.YoutubeDL(full_extract_opts) as ydl_full:
                         full_info = ydl_full.extract_info(pl_url, download=False)
@@ -387,6 +412,8 @@ def start_download(
                     for i, entry in enumerate(entries, start=1):
                         if entry is not None:
                             full_titles[i] = entry.get("title") or ""
+                            if entry.get('id'):
+                                full_ids[i] = str(entry['id'])
                 except Exception:
                     pass
 
@@ -394,6 +421,10 @@ def start_download(
                 track_results: List[Dict[str, Any]] = []
                 items_to_download: List[int] = []
                 skipped_count = 0
+                title_counts: Dict[str, int] = {}
+                for known in full_titles.values():
+                    if known:
+                        title_counts[known] = title_counts.get(known, 0) + 1
 
                 for i in range(1, total + 1):
                     # 获取标题：优先 full 提取，其次 URL slug
@@ -405,9 +436,21 @@ def start_download(
 
                     # 相同序号不代表同一首歌：歌单可能已被用户替换。
                     known_title = full_titles.get(i, "")
-                    expected_name = (f"{i:03d} - " + yt_dlp.utils.sanitize_filename(known_title)
-                                     + f".{fmt}") if known_title else ""
-                    if expected_name and expected_name in existing_files:
+                    track_id = full_ids.get(i, '')
+                    index_key = f'{fmt}:{track_id}' if track_id else ''
+                    indexed_name = download_index.get(index_key, '')
+                    existing_name = indexed_name if indexed_name in existing_files else ''
+                    # 旧版没有索引时，用完整标题匹配，允许序号变化。
+                    if not existing_name and known_title and title_counts[known_title] == 1:
+                        suffix = ' - ' + yt_dlp.utils.sanitize_filename(known_title) + f'.{fmt}'
+                        candidates = [f for f in existing_files if re.match(r'^\d{3,} - ', f) and f.endswith(suffix)
+                                      and not any(v == f and k != index_key for k, v in download_index.items())]
+                        if len(candidates) == 1:
+                            existing_name = candidates[0]
+                    if existing_name:
+                        if index_key:
+                            download_index[index_key] = existing_name
+                            _save_download_index(pl_dir_path, download_index)
                         skipped_count += 1
                         track_results.append({
                             "index": i, "title": title,
@@ -520,6 +563,18 @@ def start_download(
                 opts["progress_hooks"] = [progress_hook]
                 opts["playlist_items"] = playlist_items
 
+                def postprocessor_hook(data: Dict[str, Any]) -> None:
+                    if data.get('status') != 'finished' or data.get('postprocessor') != 'FFmpegMetadata':
+                        return
+                    info = data.get('info_dict') or {}
+                    track_id = info.get('id')
+                    filepath = info.get('filepath') or ''
+                    if track_id and os.path.isfile(filepath) and os.path.dirname(os.path.abspath(filepath)) == os.path.abspath(pl_dir_path) and filepath.lower().endswith('.' + fmt):
+                        download_index[f'{fmt}:{track_id}'] = os.path.basename(filepath)
+                        _save_download_index(pl_dir_path, download_index)
+
+                opts['postprocessor_hooks'] = [postprocessor_hook]
+
                 with yt_dlp.YoutubeDL(opts) as ydl:
                     ydl.download([pl_url])
 
@@ -542,6 +597,9 @@ def start_download(
                         if found:
                             tr["status"] = "ok"
                             tr["reason"] = ""
+                            if full_ids.get(idx):
+                                download_index[f'{fmt}:{full_ids[idx]}'] = expected_name
+                                _save_download_index(pl_dir_path, download_index)
                         else:
                             tr["status"] = "failed"
                             tr["reason"] = "下载失败，请检查网络、权限或服务限制"

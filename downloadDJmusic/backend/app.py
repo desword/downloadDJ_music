@@ -11,6 +11,7 @@ from pydantic import BaseModel
 from . import config as cfg
 from . import downloader
 from . import scanner
+from . import workflow
 
 # 项目根目录
 ROOT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -110,6 +111,38 @@ def scan_progress() -> Dict[str, Any]:
 def scan_cancel() -> Dict[str, str]:
     scanner.cancel()
     return {"status": "cancelling"}
+
+
+@app.post("/api/workflow/start")
+def workflow_start(req: DownloadStartRequest) -> Dict[str, str]:
+    url = (req.url or "").strip()
+    path = os.path.expanduser(req.download_path.strip())
+    if not url:
+        raise HTTPException(status_code=400, detail="请输入歌单链接")
+    if not path or not os.path.isabs(path):
+        raise HTTPException(status_code=400, detail="请填写绝对下载路径")
+    if req.format not in ("wav", "mp3"):
+        raise HTTPException(status_code=400, detail="format 仅支持 wav 或 mp3")
+    try:
+        os.makedirs(path, exist_ok=True)
+        workflow.start(url, path, req.format)
+    except OSError as e:
+        raise HTTPException(status_code=400, detail=f"无法创建下载目录: {e}")
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except RuntimeError as e:
+        raise HTTPException(status_code=409, detail=str(e))
+    return {"status": "started"}
+
+
+@app.get("/api/workflow/progress")
+def workflow_progress() -> Dict[str, Any]:
+    return workflow.get_state()
+
+
+@app.post("/api/workflow/cancel")
+def workflow_cancel() -> Dict[str, bool]:
+    return {"cancelled": workflow.cancel()}
 
 
 # ---------------- 下载接口 ----------------

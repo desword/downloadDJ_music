@@ -120,6 +120,49 @@ class ScanTests(unittest.TestCase):
             self.assertEqual(state['track_results'][0]['status'], 'ok')
             self.assertTrue((playlist / '001 - New.mp3').is_file())
 
+    def test_existing_track_is_skipped_after_reordering(self):
+        class ReorderedYDL:
+            def __init__(self, opts): self.opts = opts
+            def __enter__(self): return self
+            def __exit__(self, *args): pass
+            def extract_info(self, url, download=False):
+                return {'title': 'My set', 'entries': [{'id': 'new', 'url': 'new', 'title': 'New'}, {'id': 'old', 'url': 'old', 'title': 'Old'}]}
+            def download(self, urls):
+                self_items.append(self.opts['playlist_items'])
+                Path(directory, 'My set', '001 - New.mp3').write_bytes(b'new')
+        self_items = []
+        with tempfile.TemporaryDirectory() as directory:
+            playlist = Path(directory) / 'My set'
+            playlist.mkdir()
+            (playlist / '001 - Old.mp3').write_bytes(b'old')
+            with patch.object(downloader.yt_dlp, 'YoutubeDL', ReorderedYDL), patch.object(downloader.shutil, 'which', return_value='/usr/bin/ffmpeg'):
+                downloader.start_download('playlist', directory, 'mp3')
+                downloader._download_thread.join(timeout=5)
+                state = downloader.get_state()
+            self.assertEqual(self_items, ['1'])
+            self.assertEqual(state['track_results'][1]['status'], 'skipped')
+            self.assertEqual(downloader._load_download_index(str(playlist))['mp3:old'], '001 - Old.mp3')
+
+    def test_index_matches_same_track_after_title_changes(self):
+        class RenamedYDL:
+            def __init__(self, opts): self.opts = opts
+            def __enter__(self): return self
+            def __exit__(self, *args): pass
+            def extract_info(self, url, download=False):
+                return {'title': 'My set', 'entries': [{'id': '123', 'url': 'track', 'title': 'New title'}]}
+            def download(self, urls): self.fail('should not download')
+        with tempfile.TemporaryDirectory() as directory:
+            playlist = Path(directory) / 'My set'
+            playlist.mkdir()
+            (playlist / '005 - Old title.mp3').write_bytes(b'old')
+            downloader._save_download_index(str(playlist), {'mp3:123': '005 - Old title.mp3'})
+            with patch.object(downloader.yt_dlp, 'YoutubeDL', RenamedYDL), patch.object(downloader.shutil, 'which', return_value='/usr/bin/ffmpeg'):
+                downloader.start_download('playlist', directory, 'mp3')
+                downloader._download_thread.join(timeout=5)
+                state = downloader.get_state()
+            self.assertEqual(state['status'], 'finished')
+            self.assertEqual(state['track_results'][0]['status'], 'skipped')
+
 
 if __name__ == '__main__':
     unittest.main()
