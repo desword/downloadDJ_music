@@ -1,5 +1,7 @@
 """FastAPI 主程序：提供 RESTful API 与前端静态文件托管。"""
 import os
+import subprocess
+import sys
 from typing import Any, Dict, Optional
 
 from fastapi import FastAPI, HTTPException
@@ -143,6 +145,33 @@ def workflow_progress() -> Dict[str, Any]:
 @app.post("/api/workflow/cancel")
 def workflow_cancel() -> Dict[str, bool]:
     return {"cancelled": workflow.cancel()}
+
+
+@app.post("/api/workflow/open-folder")
+def workflow_open_folder() -> Dict[str, str]:
+    """打开最近完成任务的实际目录；多歌单时打开其共同的下载目录。"""
+    state = workflow.get_state()
+    if state.get("status") != "finished":
+        raise HTTPException(status_code=409, detail="下载任务完成后才能打开目录")
+    result = state.get("download") or {}
+    root = result.get("download_path") or ""
+    if not root or not os.path.isabs(root) or not os.path.isdir(root):
+        raise HTTPException(status_code=404, detail="下载目录不存在")
+    folder = root
+    if result.get("playlist_total") == 1 and result.get("playlist_title"):
+        playlist_dir = os.path.join(root, downloader._sanitize_filename(result["playlist_title"]))
+        if os.path.isdir(playlist_dir):
+            folder = playlist_dir
+    try:
+        if sys.platform == "darwin":
+            subprocess.run(["open", folder], check=True, timeout=10, capture_output=True)
+        elif sys.platform == "win32":
+            os.startfile(folder)
+        else:
+            subprocess.run(["xdg-open", folder], check=True, timeout=10, capture_output=True)
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise HTTPException(status_code=500, detail=f"无法打开目录：{exc}") from exc
+    return {"path": folder}
 
 
 # ---------------- 下载接口 ----------------
