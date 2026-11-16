@@ -5,6 +5,7 @@ import math
 import os
 import re
 import shutil
+import subprocess
 import time
 import threading
 import tempfile
@@ -20,6 +21,32 @@ BIN_DIR = os.path.join(
     os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
     "bin",
 )
+
+
+def _find_ffmpeg() -> str:
+    """优先使用项目或系统 FFmpeg，否则使用 Python 包自带的跨平台版本。"""
+    def usable(path: str) -> bool:
+        try:
+            return subprocess.run([path, '-version'], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                                  timeout=10, check=False).returncode == 0
+        except (OSError, subprocess.SubprocessError):
+            return False
+
+    binary = 'ffmpeg.exe' if os.name == 'nt' else 'ffmpeg'
+    bundled = os.path.join(BIN_DIR, binary)
+    if os.path.isfile(bundled) and usable(bundled):
+        return bundled
+    system = shutil.which('ffmpeg')
+    if system and usable(system):
+        return system
+    try:
+        import imageio_ffmpeg
+        fallback = imageio_ffmpeg.get_ffmpeg_exe()
+        if usable(fallback):
+            return fallback
+        raise RuntimeError('FFmpeg 无法运行')
+    except (ImportError, OSError, RuntimeError) as exc:
+        raise RuntimeError('未找到可用的 FFmpeg，请重新运行应用以安装依赖') from exc
 
 
 def _load_download_index(directory: str) -> Dict[str, str]:
@@ -384,11 +411,7 @@ def start_download(
                 "noprogress": True,
                 "ignoreerrors": True,
             }
-            binary = "ffmpeg.exe" if os.name == "nt" else "ffmpeg"
-            if os.path.isfile(os.path.join(BIN_DIR, binary)):
-                base_opts["ffmpeg_location"] = BIN_DIR
-            elif not shutil.which("ffmpeg") or not shutil.which("ffprobe"):
-                raise RuntimeError("未找到 ffmpeg 或 ffprobe，请先运行安装脚本，或安装 FFmpeg 并确保它在 PATH 中")
+            base_opts["ffmpeg_location"] = _find_ffmpeg()
 
             # 保留所有歌单的结果，下载结束后可以一起核对。
             all_results: List[Dict[str, Any]] = []
@@ -694,10 +717,7 @@ def _start_scanned_download(plan: List[Dict[str, Any]], download_path: str, audi
             fmt = audio_format.lower()
             if fmt not in ('mp3', 'wav'):
                 raise ValueError('音频格式仅支持 wav 或 mp3')
-            binary = 'ffmpeg.exe' if os.name == 'nt' else 'ffmpeg'
-            ffmpeg_dir = BIN_DIR if os.path.isfile(os.path.join(BIN_DIR, binary)) else None
-            if not ffmpeg_dir and (not shutil.which('ffmpeg') or not shutil.which('ffprobe')):
-                raise RuntimeError('未找到 ffmpeg 或 ffprobe，请先运行安装脚本')
+            ffmpeg_location = _find_ffmpeg()
             results: List[Dict[str, Any]] = []
             remaining = sum(1 for p in plan for t in p.get('tracks', [])
                             if t.get('status') != 'restricted' and t.get('source_url'))
@@ -798,8 +818,7 @@ def _start_scanned_download(plan: List[Dict[str, Any]], download_path: str, audi
                         'outtmpl': os.path.join(folder, f'{idx:03d} - %(title)s.%(ext)s'),
                         'progress_hooks': [progress_hook], 'postprocessor_hooks': [postprocessor_hook],
                     }
-                    if ffmpeg_dir:
-                        opts['ffmpeg_location'] = ffmpeg_dir
+                    opts['ffmpeg_location'] = ffmpeg_location
                     try:
                         with yt_dlp.YoutubeDL(opts) as ydl:
                             cached = item.get('info')

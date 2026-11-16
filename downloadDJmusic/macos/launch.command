@@ -24,56 +24,35 @@ if [ "$health" = '{"application":"DJ Deck","status":"ready"}' ]; then
 fi
 
 echo "DJ Deck：正在检查运行环境…"
-python_cmd=""
-for candidate in "$venv_dir/bin/python" python3.12 python3; do
-    if command -v "$candidate" >/dev/null 2>&1 && "$candidate" -c 'import sys, venv; sys.exit(sys.version_info < (3, 9))' >/dev/null 2>&1; then
-        python_cmd="$(command -v "$candidate")"
-        break
-    fi
-done
-ffmpeg_ready=false
-if command -v ffmpeg >/dev/null 2>&1 && command -v ffprobe >/dev/null 2>&1 && ffmpeg -version >/dev/null 2>&1 && ffprobe -version >/dev/null 2>&1; then
-    ffmpeg_ready=true
-fi
-
-if [ -z "$python_cmd" ] || [ "$ffmpeg_ready" = false ]; then
-    if ! command -v brew >/dev/null 2>&1; then
-        echo "需要 Homebrew 来安装缺少的依赖，将从 Homebrew 官方地址安装。"
-        echo "安装过程中可能要求确认、网络连接以及 Mac 管理员密码。"
-        installer_path="$(mktemp "$support_dir/homebrew-install.XXXXXX")"
-        if ! /usr/bin/curl -fLsS --retry 2 https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh -o "$installer_path"; then
-            rm -f "$installer_path"
-            echo "无法下载 Homebrew 安装程序。" >&2
-            exit 1
+find_python() {
+    for candidate in "$venv_dir/bin/python" \
+        /Library/Frameworks/Python.framework/Versions/3.14/bin/python3.14 \
+        /Library/Frameworks/Python.framework/Versions/3.13/bin/python3.13 \
+        /Library/Frameworks/Python.framework/Versions/3.12/bin/python3.12 \
+        /Library/Frameworks/Python.framework/Versions/3.11/bin/python3.11 \
+        /Library/Frameworks/Python.framework/Versions/3.10/bin/python3.10 \
+        /Library/Frameworks/Python.framework/Versions/3.9/bin/python3.9 \
+        python3.12 python3; do
+        if command -v "$candidate" >/dev/null 2>&1 && "$candidate" -c 'import sys, venv; sys.exit(sys.version_info < (3, 9))' >/dev/null 2>&1; then
+            command -v "$candidate"
+            return 0
         fi
-        if ! /bin/bash "$installer_path"; then
-            rm -f "$installer_path"
-            echo "Homebrew 安装未完成。" >&2
-            exit 1
-        fi
-        rm -f "$installer_path"
-        export PATH="/opt/homebrew/bin:/usr/local/bin:$PATH"
-    fi
-    if ! command -v brew >/dev/null 2>&1; then
-        echo "未找到 Homebrew，请检查安装输出后重新运行。" >&2
+    done
+    return 1
+}
+python_cmd="$(find_python || true)"
+if [ -z "$python_cmd" ]; then
+    echo "需要 Python 3.9 或更新版本。正在打开 Python 官方下载页面。"
+    echo "请下载安装 macOS 版 Python，完成后回到此窗口按回车继续。"
+    /usr/bin/open 'https://www.python.org/downloads/macos/'
+    read -r -p "安装完成后按回车继续..." _
+    python_cmd="$(find_python || true)"
+    if [ -z "$python_cmd" ]; then
+        echo "仍未找到 Python。请完成安装后重新双击 DJ Deck。" >&2
         exit 1
     fi
-    if [ -z "$python_cmd" ]; then
-        echo "正在安装 Python 3.12…"
-        brew install python@3.12
-        python_cmd="$(brew --prefix python@3.12)/bin/python3.12"
-    fi
-    if [ "$ffmpeg_ready" = false ]; then
-        echo "正在安装 FFmpeg…"
-        brew install ffmpeg
-        export PATH="$(brew --prefix ffmpeg)/bin:$PATH"
-    fi
 fi
 
-if ! command -v ffmpeg >/dev/null 2>&1 || ! command -v ffprobe >/dev/null 2>&1 || ! ffmpeg -version >/dev/null 2>&1 || ! ffprobe -version >/dev/null 2>&1; then
-    echo "FFmpeg 或 ffprobe 不可用，请检查 Homebrew 的安装输出。" >&2
-    exit 1
-fi
 if [ ! -x "$venv_dir/bin/python" ] || ! "$venv_dir/bin/python" -c 'import sys; sys.exit(sys.version_info < (3, 9))' >/dev/null 2>&1; then
     echo "正在创建 Python 环境…"
     "$python_cmd" -m venv "$venv_dir"
@@ -84,6 +63,11 @@ if ! "$venv_dir/bin/python" "$resource_dir/check_dependencies.py" "$app_source/b
     "$venv_dir/bin/python" "$resource_dir/check_dependencies.py" "$app_source/backend/requirements.txt"
 else
     echo "Python 依赖已满足，跳过安装。"
+fi
+
+if ! "$venv_dir/bin/python" -c 'import imageio_ffmpeg, subprocess; subprocess.run([imageio_ffmpeg.get_ffmpeg_exe(), "-version"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=True)' ; then
+    echo "内置 FFmpeg 无法在此 Mac 上运行，请检查系统版本与处理器架构。" >&2
+    exit 1
 fi
 
 echo "环境就绪，正在打开 DJ Deck。请保持此窗口运行；按 Control-C 结束。"

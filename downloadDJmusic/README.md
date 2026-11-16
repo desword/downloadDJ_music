@@ -5,10 +5,10 @@
 ## macOS 应用
 
 1. 下载 `dist/DJ-Deck-macOS.zip` 并解压，可将 `DJ Deck.app` 拖入“应用程序”文件夹。
-2. 双击 `DJ Deck.app`。首次启动会在终端自动检查 Python、FFmpeg、ffprobe 和 Python 依赖，缺少时自动安装；请保持终端打开，安装完成后网页会自动打开。
+2. 双击 `DJ Deck.app`。首次启动会在终端检查 Python 并自动安装应用依赖（包括 FFmpeg）；请保持终端打开，安装完成后网页会自动打开。
 3. 后续双击应用即可启动；已满足的依赖不会重复安装。保持终端窗口打开，按 Control-C 可以停止服务。
 
-首次安装需要联网。如果 Mac 缺少 Python 或 FFmpeg，应用会通过 Homebrew 安装；缺少 Homebrew 时会从官方地址安装，期间可能要求确认及输入 Mac 管理员密码。安装过程由 Homebrew 和系统提示完成。
+首次安装需要联网。应用不需要 Homebrew；如果缺少 Python，会自动打开 Python 官方下载页，请安装 Python 3.9 或更新版本，然后回到终端按回车继续。FFmpeg 和其他 Python 依赖会自动安装。
 
 应用目前未签名和公证，macOS 可能阻止首次打开。可在 Finder 中右键点击应用并选择“打开”；如仍被阻止，请在“系统设置 → 隐私与安全性”查看打开选项。
 
@@ -29,7 +29,7 @@
 - 支持 wav（默认）/ mp3 格式切换，自动嵌入元数据
 - 实时展示当前歌曲和全部歌曲的预计剩余时间，下载任务结束后播放提示音
 - 支持扫描或下载中途取消；再次运行时跳过已下载的歌曲
-- macOS 应用会自动检查并安装缺少的 FFmpeg；Windows 可运行下载脚本
+- macOS 应用通过 Python 自动安装适配 Intel 和 Apple 芯片的 FFmpeg；Windows 也可运行下载脚本
 - 默认配置持久化保存
 
 ## 目录结构
@@ -98,7 +98,7 @@ downloadDJmusic/
 手动访问 `http://127.0.0.1:18899`。
 
 **Q：下载报错提示找不到 ffmpeg？**
-macOS 应用会尝试安装 FFmpeg；Windows 可运行 `download_ffmpeg.bat`，或确认系统 PATH 中已安装 ffmpeg。
+macOS 应用会安装自带 FFmpeg 的 Python 依赖，请联网后重新打开应用；Windows 可运行 `download_ffmpeg.bat`。
 
 **Q：端口 18899 被占用？**
 修改 `start.py` 中的 `PORT` 常量，并同步修改前端（无需改动，前端用相对路径）。
