@@ -30,7 +30,10 @@ def start(url: str, download_path: str, audio_format: str) -> None:
                 if scan['status'] == 'error':
                     _state.update(status='error', error=scan['message'])
                     return
-                downloader.start_download(url, download_path, audio_format)
+                playlists = scan.get('playlists') or []
+                scan_total = (sum(len(p.get('tracks') or []) for p in playlists)
+                              if playlists and not any(p.get('error') for p in playlists) else None)
+                downloader.start_download(url, download_path, audio_format, scan_total_tracks=scan_total)
                 _state.update(status='downloading', download_started=True)
             while downloader.is_running():
                 time.sleep(.2)

@@ -1,5 +1,6 @@
 """下载核心逻辑模块：封装 yt-dlp 调用，支持歌单解析与批量下载。"""
 import json
+import math
 import os
 import re
 import shutil
@@ -68,6 +69,40 @@ def _format_eta(seconds: float) -> str:
         return f"{int(seconds / 60)}分{int(seconds % 60)}秒"
     else:
         return f"{int(seconds / 3600)}小时{int((seconds % 3600) / 60)}分"
+
+
+def _estimate_remaining(progress: Dict[str, Any], completed: int, elapsed: float,
+                        remaining: Optional[int]) -> tuple:
+    """返回当前音频传输及整个任务的剩余秒数；缺乏数据时返回 None。"""
+    def number(value: Any) -> Optional[float]:
+        if isinstance(value, (int, float)) and math.isfinite(value) and value >= 0:
+            return float(value)
+        return None
+
+    eta = number(progress.get('eta'))
+    downloaded = number(progress.get('downloaded_bytes'))
+    total = number(progress.get('total_bytes')) or number(progress.get('total_bytes_estimate'))
+    speed = number(progress.get('speed'))
+    fraction = min(1.0, downloaded / total) if downloaded is not None and total else None
+    if fraction is None:
+        try:
+            fraction = max(0.0, min(1.0, float(re.sub(r'\x1b\[[0-9;]*[A-Za-z]', '', progress.get('_percent_str', '')).strip().rstrip('%')) / 100))
+        except (ValueError, TypeError):
+            pass
+    if eta is None and total and downloaded is not None and speed:
+        eta = max(0.0, (total - downloaded) / speed)
+    track_elapsed = number(progress.get('elapsed'))
+    if eta is None and track_elapsed is not None and fraction and fraction < 1:
+        eta = track_elapsed * (1 - fraction) / fraction
+    if remaining is None or remaining < 1:
+        return eta, None
+    average = elapsed / completed if completed > 0 else None
+    if average is None and eta is not None and fraction is not None and fraction < .98:
+        average = eta / (1 - fraction)
+    if average is None:
+        return eta, None
+    current = eta if eta is not None else average * (1 - fraction) if fraction is not None else average
+    return eta, max(0.0, current + max(0, remaining - 1) * average)
 
 # 获取 SoundCloud API client_id（从 yt-dlp 缓存目录读取）
 def _get_soundcloud_client_id() -> Optional[str]:
@@ -165,6 +200,8 @@ _task_state: Dict[str, Any] = {
     "message": "",             # 阶段提示文案
     "error": "",
     "eta": "",                 # 当前曲目剩余时间预估
+    "track_eta_seconds": None,
+    "total_eta_seconds": None,
     "track_results": [],       # [{index, title, status: "ok"|"failed"|"skipped", reason}]
 }
 _task_lock = threading.Lock()
@@ -198,6 +235,8 @@ def reset_state() -> None:
         download_path="",
         error="",
         eta="",
+        track_eta_seconds=None,
+        total_eta_seconds=None,
         track_results=[],
     )
 
@@ -286,6 +325,7 @@ def start_download(
     audio_format: str,
     playlist_title: str = "",
     track_count: int = 0,
+    scan_total_tracks: Optional[int] = None,
 ) -> None:
     """在后台线程中启动下载任务。立即返回，进度通过 get_state() 查询。
 
@@ -344,6 +384,10 @@ def start_download(
 
             # 保留所有歌单的结果，下载结束后可以一起核对。
             all_results: List[Dict[str, Any]] = []
+            completed_total = 0
+            completed_elapsed = 0.0
+            processed_before_playlist = 0
+            first_transfer_time: Optional[float] = None
             # 外层循环：逐个歌单
             for pl_idx, pl_url in enumerate(urls, start=1):
                 _check_cancel()
@@ -351,6 +395,8 @@ def start_download(
                 # 阶段一：flat 快速解析歌单（秒级，用于 UI 显示标题和曲目数）
                 _update_state(
                     status="parsing",
+                    track_eta_seconds=None,
+                    total_eta_seconds=None,
                     playlist_index=pl_idx,
                     message=f"正在获取第 {pl_idx}/{len(urls)} 个歌单信息...",
                     playlist_title="",
@@ -479,6 +525,7 @@ def start_download(
                         percent="100%",
                         message=f"歌单「{playlist_title_resolved}」全部曲目已存在，跳过",
                     )
+                    processed_before_playlist += total
                     continue
 
                 # 阶段三：歌单级别下载，带 ETA 计算
@@ -491,6 +538,8 @@ def start_download(
                     percent="0%",
                     message=f"已跳过 {skipped_count} 首已存在，开始下载剩余 {len(items_to_download)} 首...",
                     error="",
+                    track_eta_seconds=None,
+                    total_eta_seconds=None,
                 )
 
                 output_template = os.path.join(
@@ -501,39 +550,28 @@ def start_download(
                 )
 
                 # ETA 统计：记录每首完成时间，估算总剩余时间
-                first_download_time: float = 0.0
-                completed_tracks: int = 0
+                completed_in_playlist: set = set()
                 observed_titles: Dict[int, str] = {}
                 def progress_hook(d: Dict[str, Any]) -> None:
-                    nonlocal first_download_time, completed_tracks
+                    nonlocal first_transfer_time, completed_total, completed_elapsed
                     if _cancel_flag.is_set():
                         raise DownloadCancelled()
                     info = d.get("info_dict") or {}
                     if info.get("title"):
                         observed_titles[info.get("playlist_index") or 1] = info["title"]
                     if d["status"] == "downloading":
-                        if first_download_time == 0:
-                            first_download_time = time.time()
+                        if first_transfer_time is None:
+                            first_transfer_time = time.monotonic()
                         pct = d.get("_percent_str", "0%")
                         pct = re.sub(r"\x1b\[[0-9;]*[A-Za-z]", "", pct).strip()
                         pl_track_idx = info.get("playlist_index") or 0
                         pl_track_count = info.get("playlist_count") or total
                         title = info.get("title", "")
 
-                        # 计算 ETA：已完成曲目的平均耗时 × 剩余曲目数
-                        eta_str = ""
-                        if completed_tracks > 0 and first_download_time > 0:
-                            elapsed = time.time() - first_download_time
-                            avg_per_track = elapsed / completed_tracks
-                            # 当前曲目剩余 + 剩余曲目
-                            try:
-                                current_pct = float(pct.replace("%", "")) / 100.0
-                            except ValueError:
-                                current_pct = 0.5
-                            remaining_current = avg_per_track * (1.0 - current_pct)
-                            remaining_others = avg_per_track * (pl_track_count - pl_track_idx)
-                            total_eta = remaining_current + remaining_others
-                            eta_str = _format_eta(total_eta)
+                        remaining = (max(1, scan_total_tracks - processed_before_playlist - skipped_count - len(completed_in_playlist))
+                                     if scan_total_tracks is not None else None)
+                        track_eta, total_eta = _estimate_remaining(
+                            d, completed_total, completed_elapsed, remaining)
 
                         _update_state(
                             percent=pct,
@@ -543,10 +581,17 @@ def start_download(
                             playlist_index=pl_idx,
                             playlist_title=playlist_title_resolved,
                             status="downloading",
-                            eta=eta_str,
+                            eta=_format_eta(track_eta) if track_eta is not None else "",
+                            track_eta_seconds=track_eta,
+                            total_eta_seconds=total_eta,
                         )
                     elif d["status"] == "finished":
-                        completed_tracks += 1
+                        key = info.get("playlist_index") or info.get("id") or d.get("filename") or 1
+                        if key not in completed_in_playlist:
+                            completed_in_playlist.add(key)
+                            completed_total += 1
+                            if first_transfer_time is not None:
+                                completed_elapsed = time.monotonic() - first_transfer_time
                         pl_track_idx = info.get("playlist_index") or 0
                         title = info.get("title", "")
                         _update_state(
@@ -554,6 +599,8 @@ def start_download(
                             percent="100%",
                             current_title=title or f"第 {pl_track_idx} 首",
                             eta="",
+                            track_eta_seconds=None,
+                            total_eta_seconds=None,
                         )
 
                 playlist_items = _build_playlist_items(items_to_download)
@@ -604,6 +651,7 @@ def start_download(
                             tr["status"] = "failed"
                             tr["reason"] = "下载失败，请检查网络、权限或服务限制"
                 _update_state(track_results=all_results)
+                processed_before_playlist += total
 
                 _check_cancel()
 
@@ -613,6 +661,8 @@ def start_download(
                 _update_state(
                     status="finished",
                     percent="100%",
+                    track_eta_seconds=0,
+                    total_eta_seconds=0,
                     current_track=_task_state.get("total_tracks", 0),
                 )
         except DownloadCancelled:

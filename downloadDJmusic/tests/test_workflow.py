@@ -13,7 +13,7 @@ class WorkflowTests(unittest.TestCase):
         self.fail(f'workflow did not reach {status}')
 
     def test_scan_automatically_starts_download(self):
-        scan = {'status': 'finished', 'message': '', 'playlists': []}
+        scan = {'status': 'finished', 'message': '', 'playlists': [{'tracks': [{}, {}]}, {'tracks': [{}]}]}
         result = {'status': 'finished', 'error': ''}
         with patch.object(workflow.scanner, 'start'), patch.object(workflow.scanner, 'get_state', return_value=scan), \
              patch.object(workflow.downloader, 'is_running', return_value=False), \
@@ -21,7 +21,7 @@ class WorkflowTests(unittest.TestCase):
              patch.object(workflow.downloader, 'get_state', return_value=result):
             workflow.start('playlist', '/tmp/music', 'mp3')
             self.wait_for('finished')
-            start.assert_called_once_with('playlist', '/tmp/music', 'mp3')
+            start.assert_called_once_with('playlist', '/tmp/music', 'mp3', scan_total_tracks=3)
 
     def test_cancel_during_scan_prevents_download(self):
         scan = {'status': 'scanning', 'message': '', 'playlists': []}
