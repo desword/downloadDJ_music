@@ -222,10 +222,10 @@ def fetch_playlist_info(url: str) -> Dict[str, Any]:
     track_urls: List[str] = []
     for entry in raw_entries:
         if entry is None:
+            track_urls.append("")
             continue
         u = entry.get("url") or entry.get("id")
-        if u:
-            track_urls.append(u)
+        track_urls.append(u or "")
 
     return {
         "title": playlist_title,
@@ -319,6 +319,8 @@ def start_download(
             elif not shutil.which("ffmpeg") or not shutil.which("ffprobe"):
                 raise RuntimeError("未找到 ffmpeg 或 ffprobe，请先运行安装脚本，或安装 FFmpeg 并确保它在 PATH 中")
 
+            # 保留所有歌单的结果，下载结束后可以一起核对。
+            all_results: List[Dict[str, Any]] = []
             # 外层循环：逐个歌单
             for pl_idx, pl_url in enumerate(urls, start=1):
                 _check_cancel()
@@ -361,13 +363,11 @@ def start_download(
                 _check_cancel()
 
                 # 扫描已存在文件
-                existing_prefixes: set = set()
+                existing_files: set = set()
                 pl_dir_path = os.path.join(download_path, playlist_dir)
                 if os.path.isdir(pl_dir_path):
                     for fname in os.listdir(pl_dir_path):
-                        match = re.match(r"^(\d{3,}) - .+\." + re.escape(fmt) + r"$", fname, re.IGNORECASE)
-                        if match:
-                            existing_prefixes.add(int(match.group(1)))
+                        existing_files.add(fname)
 
                 # full 提取获取曲目标题（ignoreerrors 让 DRM 曲目返回 None）
                 full_extract_opts: Dict[str, Any] = {
@@ -382,6 +382,8 @@ def start_download(
                     with yt_dlp.YoutubeDL(full_extract_opts) as ydl_full:
                         full_info = ydl_full.extract_info(pl_url, download=False)
                     entries = list(full_info.get("entries") or []) if full_info else []
+                    if full_info and full_info.get("entries") is None:
+                        entries = [full_info]
                     for i, entry in enumerate(entries, start=1):
                         if entry is not None:
                             full_titles[i] = entry.get("title") or ""
@@ -401,7 +403,11 @@ def start_download(
                     if not title:
                         title = f"第 {i} 首"
 
-                    if i in existing_prefixes:
+                    # 相同序号不代表同一首歌：歌单可能已被用户替换。
+                    known_title = full_titles.get(i, "")
+                    expected_name = (f"{i:03d} - " + yt_dlp.utils.sanitize_filename(known_title)
+                                     + f".{fmt}") if known_title else ""
+                    if expected_name and expected_name in existing_files:
                         skipped_count += 1
                         track_results.append({
                             "index": i, "title": title,
@@ -414,7 +420,10 @@ def start_download(
                             "status": "pending", "reason": "",
                         })
 
-                _update_state(track_results=track_results)
+                for track in track_results:
+                    track["playlist_title"] = playlist_title_resolved
+                all_results.extend(track_results)
+                _update_state(track_results=all_results)
                 _check_cancel()
 
                 if not items_to_download:
@@ -451,11 +460,14 @@ def start_download(
                 # ETA 统计：记录每首完成时间，估算总剩余时间
                 first_download_time: float = 0.0
                 completed_tracks: int = 0
+                observed_titles: Dict[int, str] = {}
                 def progress_hook(d: Dict[str, Any]) -> None:
                     nonlocal first_download_time, completed_tracks
                     if _cancel_flag.is_set():
                         raise DownloadCancelled()
                     info = d.get("info_dict") or {}
+                    if info.get("title"):
+                        observed_titles[info.get("playlist_index") or 1] = info["title"]
                     if d["status"] == "downloading":
                         if first_download_time == 0:
                             first_download_time = time.time()
@@ -521,14 +533,19 @@ def start_download(
                     if tr["status"] in ("pending", "unknown"):
                         idx = tr["index"]
                         prefix = f"{idx:03d} - "
-                        found = any(f.startswith(prefix) and f.lower().endswith("." + fmt) for f in existing_files)
+                        expected_title = observed_titles.get(idx) or full_titles.get(idx, "")
+                        if total == 1 and not expected_title:
+                            expected_title = playlist_title_resolved
+                        expected_name = (prefix + yt_dlp.utils.sanitize_filename(expected_title) + "." + fmt
+                                         if expected_title else "")
+                        found = bool(expected_name and expected_name in existing_files)
                         if found:
                             tr["status"] = "ok"
                             tr["reason"] = ""
                         else:
                             tr["status"] = "failed"
-                            tr["reason"] = "DRM保护或下载失败"
-                _update_state(track_results=track_results)
+                            tr["reason"] = "下载失败，请检查网络、权限或服务限制"
+                _update_state(track_results=all_results)
 
                 _check_cancel()
 

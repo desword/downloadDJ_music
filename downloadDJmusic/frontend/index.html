@@ -1,360 +1,49 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="zh-CN">
 <head>
-    <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>SoundCloud 歌单下载器</title>
-    <script src="https://cdn.tailwindcss.com"></script>
-    <style>
-        body { font-family: -apple-system, "Segoe UI", "Microsoft YaHei", sans-serif; }
-        .spinner {
-            border: 3px solid rgba(255,255,255,0.3);
-            border-top: 3px solid #fff;
-            border-radius: 50%;
-            width: 16px; height: 16px;
-            display: inline-block;
-            animation: spin 0.8s linear infinite;
-        }
-        @keyframes spin { to { transform: rotate(360deg); } }
-        .progress-bar-fill { transition: width 0.3s ease; }
-        /* 解析阶段的不定进度动画 */
-        @keyframes indeterminate {
-            0% { left: -40%; width: 40%; }
-            50% { left: 30%; width: 50%; }
-            100% { left: 100%; width: 40%; }
-        }
-        .progress-bar-indeterminate {
-            position: absolute; height: 100%;
-            background: #f97316; border-radius: 9999px;
-            animation: indeterminate 1.2s ease-in-out infinite;
-        }
-    </style>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>DJ DECK — SoundCloud 下载台</title>
+<style>
+:root{color-scheme:dark;--bg:#090b12;--panel:#141823;--line:#2b3040;--text:#f4f3f0;--muted:#9a9fae;--orange:#ff8152;--mint:#a1f0c6;--red:#ff8b91}*{box-sizing:border-box}body{margin:0;background:radial-gradient(ellipse at 85% -10%,#542b38 0,transparent 35%),radial-gradient(ellipse at -10% 60%,#17303b 0,transparent 35%),var(--bg);color:var(--text);font:15px/1.55 -apple-system,BlinkMacSystemFont,"Segoe UI","Microsoft YaHei",sans-serif}button,input,textarea{font:inherit}button{cursor:pointer}button:disabled{opacity:.4;cursor:not-allowed}a{color:var(--orange)}.wrap{max-width:1100px;margin:auto;padding:0 28px 48px}.top{height:76px;display:flex;align-items:center;justify-content:space-between;border-bottom:1px solid #ffffff16}.brand{font-weight:850;letter-spacing:.16em;font-size:16px}.brand span{color:var(--orange)}.tag{font-size:11px;letter-spacing:.14em;color:var(--muted)}.hero{padding:52px 0 34px;display:flex;align-items:end;justify-content:space-between;gap:20px}.eyebrow{color:var(--orange);font-size:11px;font-weight:800;letter-spacing:.2em}.hero h1{font-size:clamp(34px,5vw,55px);letter-spacing:-.05em;line-height:1.1;margin:12px 0}.hero p{color:var(--muted);margin:0}.disc{width:106px;height:106px;border-radius:50%;border:1px solid #ffffff25;background:repeating-radial-gradient(circle,#181b25 0,#181b25 3px,#292d37 4px,#181b25 5px);display:grid;place-items:center;flex-shrink:0}.disc:after{content:'♪';display:grid;place-items:center;width:30px;height:30px;border-radius:50%;background:var(--orange);color:#171019;font-weight:bold}.grid{display:grid;grid-template-columns:1.08fr .92fr;gap:16px}.panel{background:linear-gradient(145deg,#191d29,#11151e);border:1px solid var(--line);border-radius:16px;padding:24px;box-shadow:0 16px 50px #0003}.panel.full{grid-column:1/-1}.panel-head{display:flex;align-items:center;gap:12px;margin-bottom:20px}.num{display:grid;place-items:center;width:32px;height:32px;border:1px solid #ff81565c;border-radius:9px;color:var(--orange);font-size:11px;font-weight:800}.panel h2{font-size:17px;margin:0;letter-spacing:-.02em}.sub{font-size:12px;color:var(--muted);margin:2px 0 0}.label{display:block;color:#c7cad2;font-size:12px;font-weight:700;margin:17px 0 7px}textarea,input[type=text]{width:100%;background:#0c1018;border:1px solid #353b4b;border-radius:9px;color:white;padding:12px 14px;outline:none}textarea:focus,input[type=text]:focus{border-color:var(--orange);box-shadow:0 0 0 3px #ff81521c}textarea{resize:vertical;min-height:100px}::placeholder{color:#707887}.buttons{display:flex;gap:9px;flex-wrap:wrap;margin-top:16px}.button{border:1px solid #42495b;border-radius:9px;background:#252a39;color:#f5f5f5;padding:10px 16px;font-size:13px;font-weight:750;transition:.15s}.button:hover:not(:disabled){transform:translateY(-1px);border-color:#a8aabd}.primary{background:var(--orange);border-color:var(--orange);color:#21120f}.primary:hover:not(:disabled){background:#ffa77e;border-color:#ffa77e}.ghost{background:transparent}.formats{display:flex;gap:10px}.format{border:1px solid #353b4b;border-radius:9px;padding:9px 15px;color:#d4d6dd;cursor:pointer}.format:has(input:checked){border-color:var(--orange);color:white;background:#ff81520e}.format input{accent-color:var(--orange)}.notice{font-size:12px;color:var(--muted);margin:12px 0 0}.status{color:var(--muted);font-size:13px;min-height:20px;margin:12px 0 0}.results{margin-top:18px}.summary{display:flex;gap:8px;flex-wrap:wrap;margin:10px 0}.badge{border-radius:999px;padding:4px 10px;font-size:11px;font-weight:700;background:#27332e;color:var(--mint)}.badge.restricted{background:#40252e;color:#ffadb0}.badge.unknown{background:#403425;color:#f5cd8f}.playlist{border-top:1px solid var(--line);padding-top:14px;margin-top:14px}.playlist h3{font-size:14px;margin:0 0 8px}.tracks{max-height:300px;overflow:auto}.track{display:grid;grid-template-columns:28px minmax(0,1fr) auto;gap:10px;align-items:start;border-top:1px solid #ffffff0b;padding:9px 2px;font-size:13px}.track-num{color:#777e8f;font-variant-numeric:tabular-nums}.track-name{overflow-wrap:anywhere}.track-reason{color:var(--muted);font-size:11px}.track-state{font-size:11px;color:var(--mint);white-space:nowrap}.track-state.restricted{color:var(--red)}.track-state.unknown{color:#f5cd8f}.progress{height:7px;background:#303443;border-radius:8px;overflow:hidden;margin:18px 0 8px}.progress>div{height:100%;width:0;background:linear-gradient(90deg,#ff8152,#ffb07b);transition:width .3s}.progress-top{display:flex;justify-content:space-between;gap:12px}.progress-top strong{font-size:14px}.foot{display:flex;justify-content:space-between;color:#777e8f;font-size:11px;margin-top:27px}.hidden{display:none!important}@media(max-width:700px){.wrap{padding:0 16px 35px}.hero{padding:38px 0 25px}.disc{width:75px;height:75px}.grid{grid-template-columns:1fr}.panel.full{grid-column:auto}.panel{padding:19px}.top{height:64px}.tag{font-size:9px}.track{grid-template-columns:22px minmax(0,1fr) auto}}
+</style>
 </head>
-<body class="bg-slate-900 text-slate-100 min-h-screen">
-    <div class="max-w-3xl mx-auto px-4 py-8">
-
-        <!-- 标题栏 -->
-        <header class="mb-8 text-center">
-            <h1 class="text-3xl font-bold text-orange-400">🎵 SoundCloud 歌单下载器</h1>
-            <p class="text-slate-400 mt-2">基于 yt-dlp，支持批量下载歌单为 wav / mp3</p>
-        </header>
-
-        <!-- 歌单链接输入区 -->
-        <section class="bg-slate-800 rounded-xl p-5 mb-5 shadow-lg">
-            <label class="block text-sm font-medium text-slate-300 mb-2">歌单链接</label>
-            <textarea id="urlInput" rows="3"
-                placeholder="请输入 SoundCloud 歌单链接，多个歌单可用英文分号 ; 或换行分隔"
-                class="w-full bg-slate-700 border border-slate-600 rounded-lg px-3 py-2 focus:outline-none focus:ring-2 focus:ring-orange-500 placeholder-slate-500 resize-y"></textarea>
-        </section>
-
-        <!-- 下载配置区 -->
-        <section class="bg-slate-800 rounded-xl p-5 mb-5 shadow-lg">
-            <h2 class="text-lg font-semibold text-slate-200 mb-3">下载配置</h2>
-            <div class="mb-3">
-                <label class="block text-sm font-medium text-slate-300 mb-1">下载路径</label>
-                <input id="pathInput" type="text"
-                    placeholder="例如 /Users/你的用户名/Music/SoundCloud"
-                    class="w-full bg-slate-700 border border-slate-600 rounded-lg px-3 py-2 focus:outline-none focus:ring-2 focus:ring-orange-500 placeholder-slate-500" />
-            </div>
-            <div class="flex items-center gap-4 mb-3">
-                <label class="text-sm font-medium text-slate-300">音频格式</label>
-                <label class="inline-flex items-center gap-1 cursor-pointer">
-                    <input type="radio" name="format" value="wav" checked class="accent-orange-500" />
-                    <span>WAV（默认）</span>
-                </label>
-                <label class="inline-flex items-center gap-1 cursor-pointer">
-                    <input type="radio" name="format" value="mp3" class="accent-orange-500" />
-                    <span>MP3</span>
-                </label>
-            </div>
-            <button onclick="saveDefaultConfig()"
-                class="text-sm bg-slate-600 hover:bg-slate-500 text-white rounded-lg px-4 py-1.5 transition">
-                保存为默认配置
-            </button>
-            <span id="saveCfgMsg" class="text-sm text-green-400 ml-3 hidden">已保存</span>
-        </section>
-
-        <!-- 操作区 -->
-        <section class="flex gap-3 mb-5">
-            <button id="startBtn" onclick="startDownload()"
-                class="flex-1 bg-green-600 hover:bg-green-700 disabled:bg-slate-600 text-white font-semibold rounded-lg px-4 py-3 transition">
-                开始下载
-            </button>
-            <button id="cancelBtn" onclick="cancelDownload()" disabled
-                class="flex-1 bg-red-600 hover:bg-red-700 disabled:bg-slate-600 text-white font-semibold rounded-lg px-4 py-3 transition">
-                取消下载
-            </button>
-        </section>
-
-        <!-- 进度区 -->
-        <section id="progressSection" class="bg-slate-800 rounded-xl p-5 shadow-lg hidden">
-            <div class="flex justify-between text-sm text-slate-300 mb-2">
-                <span id="progressLabel">准备中...</span>
-                <span id="progressPercent">0%</span>
-            </div>
-            <div class="w-full bg-slate-700 rounded-full h-4 overflow-hidden relative">
-                <div id="progressBar" class="progress-bar-fill bg-orange-500 h-4 rounded-full" style="width:0%"></div>
-            </div>
-            <p id="progressDetail" class="text-slate-400 text-sm mt-3"></p>
-            <!-- 曲目结果列表 -->
-            <div id="trackResults" class="mt-4 hidden"></div>
-        </section>
-
-        <footer class="text-center text-slate-500 text-xs mt-10">
-            文件保存于下载路径下的歌单名子目录
-        </footer>
-    </div>
-
+<body><main class="wrap">
+<header class="top"><div class="brand">◉ DJ <span>DECK</span></div><div class="tag">SOUNDCLOUD / DOWNLOAD STATION</div></header>
+<section class="hero"><div><div class="eyebrow">YOUR MUSIC. YOUR SET.</div><h1>准备好你的下一场。</h1><p>先检查歌单，再放心整理你的音乐库。</p></div><div class="disc" aria-hidden="true"></div></section>
+<div class="grid">
+<section class="panel"><div class="panel-head"><span class="num">01</span><div><h2>添加歌单</h2><p class="sub">PLAYLIST SOURCE</p></div></div>
+<label class="label" for="urlInput">SoundCloud 链接</label><textarea id="urlInput" placeholder="粘贴歌单或单曲链接；多个链接用换行或英文分号分隔"></textarea>
+<p class="notice">逐首检查可能需要一些时间，不会下载音频。</p><div class="buttons"><button class="button primary" id="scanBtn">扫描歌单 →</button><button class="button ghost hidden" id="cancelScanBtn">停止扫描</button></div><p class="status" id="scanStatus" role="status"></p></section>
+<section class="panel"><div class="panel-head"><span class="num">02</span><div><h2>下载设置</h2><p class="sub">OUTPUT SETTINGS</p></div></div>
+<label class="label" for="pathInput">保存位置</label><input type="text" id="pathInput" placeholder="例如 /Users/你的用户名/Music/SoundCloud">
+<span class="label">音频格式</span><div class="formats"><label class="format"><input type="radio" name="format" value="wav" checked> WAV</label><label class="format"><input type="radio" name="format" value="mp3"> MP3</label></div>
+<div class="buttons"><button class="button ghost" id="saveBtn">保存默认设置</button></div><p class="status" id="saveStatus" role="status"></p></section>
+<section class="panel full hidden" id="scanSection"><div class="panel-head"><span class="num">03</span><div><h2>检查结果</h2><p class="sub">TRACK CHECK</p></div></div><p class="notice">“可提取”表示已取得音频信息，并不保证实际下载成功；“待确认”可能是网络、地区或权限等原因。受 DRM 保护仅在服务明确提示时标记。</p><div class="summary" id="scanSummary"></div><div id="scanResults" class="results"></div><p class="notice">需要替换？请先在 SoundCloud 更新歌单，再点击“重新扫描”。确认保留当前歌单后可继续下载。</p><div class="buttons"><button class="button ghost" id="rescanBtn">重新扫描</button><button class="button ghost" id="copyBtn">复制待处理清单</button><button class="button primary" id="startBtn" disabled>确认结果，开始下载 →</button></div></section>
+<section class="panel full hidden" id="progressSection"><div class="panel-head"><span class="num">04</span><div><h2>下载进度</h2><p class="sub">NOW PROCESSING</p></div></div><div class="progress-top"><strong id="progressLabel">准备中</strong><span id="progressPercent">0%</span></div><div class="progress"><div id="progressBar"></div></div><p class="status" id="progressDetail"></p><div class="buttons"><button class="button ghost" id="cancelBtn">取消下载</button></div><div id="trackResults" class="results"></div></section>
+</div><footer class="foot"><span>DJ DECK · LOCAL MUSIC TOOL</span><span>保持页面打开以接收完成提示音</span></footer>
+</main>
 <script>
-const API = '';
-let progressTimer = null;
-
-function setBtnLoading(btn, loading, text) {
-    if (loading) {
-        btn.dataset.originText = btn.innerText;
-        btn.disabled = true;
-        btn.innerHTML = '<span class="spinner"></span>';
-    } else {
-        btn.disabled = false;
-        btn.innerText = text || btn.dataset.originText || btn.innerText;
-    }
-}
-
-// 加载默认配置
-async function loadConfig() {
-    try {
-        const res = await fetch(API + '/api/config');
-        const cfg = await res.json();
-        document.getElementById('pathInput').value = cfg.default_download_path || '';
-        if (cfg.default_format === 'mp3') {
-            document.querySelector('input[name="format"][value="mp3"]').checked = true;
-        } else {
-            document.querySelector('input[name="format"][value="wav"]').checked = true;
-        }
-    } catch (e) {
-        console.error('加载配置失败', e);
-    }
-}
-
-// 保存为默认配置
-async function saveDefaultConfig() {
-    const path = document.getElementById('pathInput').value.trim();
-    const format = document.querySelector('input[name="format"]:checked').value;
-    try {
-        await fetch(API + '/api/config', {
-            method: 'PUT',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-                default_download_path: path,
-                default_format: format,
-            }),
-        });
-        const msg = document.getElementById('saveCfgMsg');
-        msg.classList.remove('hidden');
-        setTimeout(() => msg.classList.add('hidden'), 2000);
-    } catch (e) {
-        alert('保存失败: ' + e);
-    }
-}
-
-// 开始下载
-async function startDownload() {
-    const url = document.getElementById('urlInput').value.trim();
-    const download_path = document.getElementById('pathInput').value.trim();
-    const format = document.querySelector('input[name="format"]:checked').value;
-    if (!url) { alert('请输入歌单链接'); return; }
-    if (!download_path) { alert('请填写下载路径'); return; }
-
-    const startBtn = document.getElementById('startBtn');
-    const cancelBtn = document.getElementById('cancelBtn');
-    startBtn.disabled = true;
-    cancelBtn.disabled = false;
-
-    try {
-        const res = await fetch(API + '/api/download/start', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ url, download_path, format }),
-        });
-        if (!res.ok) {
-            const err = await res.json().catch(() => ({}));
-            throw new Error(err.detail || '启动下载失败');
-        }
-        document.getElementById('progressSection').classList.remove('hidden');
-        document.getElementById('trackResults').classList.add('hidden');
-        startProgressPolling();
-    } catch (e) {
-        alert(e.message);
-        startBtn.disabled = false;
-        cancelBtn.disabled = true;
-    }
-}
-
-async function cancelDownload() {
-    if (!confirm('确定取消当前下载？')) return;
-    await fetch(API + '/api/download/cancel', { method: 'POST' });
-}
-
-function startProgressPolling() {
-    if (progressTimer) clearInterval(progressTimer);
-    updateProgress();
-    progressTimer = setInterval(updateProgress, 1000);
-}
-
-async function updateProgress() {
-    try {
-        const res = await fetch(API + '/api/download/progress');
-        const s = await res.json();
-        renderProgress(s);
-        if (['finished', 'error', 'cancelled'].includes(s.status)) {
-            clearInterval(progressTimer);
-            progressTimer = null;
-            document.getElementById('startBtn').disabled = false;
-            document.getElementById('cancelBtn').disabled = true;
-        }
-    } catch (e) {
-        console.error('查询进度失败', e);
-    }
-}
-
-function renderProgress(s) {
-    const bar = document.getElementById('progressBar');
-    const pctEl = document.getElementById('progressPercent');
-    const label = document.getElementById('progressLabel');
-    const detail = document.getElementById('progressDetail');
-    const container = bar.parentElement;
-
-    // 多歌单前缀：如 "歌单 1/3 · afro · "
-    const plTotal = s.playlist_total > 0 ? s.playlist_total : 1;
-    const plIdx = s.playlist_index > 0 ? s.playlist_index : 1;
-    const plTitle = s.playlist_title || '';
-    const plPrefix = plTotal > 1
-        ? `歌单 ${plIdx}/${plTotal} · ${plTitle} · `
-        : (plTitle ? `${plTitle} · ` : '');
-
-    if (s.status === 'parsing') {
-        // 解析阶段（flat 模式，通常 1-2 秒）：不定进度动画 + 明确文案
-        bar.style.width = '100%';
-        bar.classList.add('hidden');
-        const old = container.querySelector('.progress-bar-indeterminate');
-        if (old) old.remove();
-        const ind = document.createElement('div');
-        ind.className = 'progress-bar-indeterminate';
-        container.appendChild(ind);
-        pctEl.textContent = '解析中';
-        label.textContent = s.message || '正在获取歌单信息...';
-        detail.textContent = '正在从 SoundCloud 获取曲目列表，通常 1-2 秒';
-        return;
-    }
-
-    // 非解析阶段：移除不定动画条，恢复普通进度条
-    const ind = container.querySelector('.progress-bar-indeterminate');
-    if (ind) ind.remove();
-    bar.classList.remove('hidden');
-
-    // 计算当前歌单整体进度：已完成曲目数 + 当前首的下载百分比
-    const total = s.total_tracks > 0 ? s.total_tracks : 1;
-    const cur = s.current_track > 0 ? s.current_track : 1;
-    let curPct = 0;
-    const m = String(s.percent || '').match(/([\d.]+)/);
-    if (m) curPct = parseFloat(m[1]);
-    const overall = ((cur - 1) + curPct / 100) / total * 100;
-    const overallClamped = Math.min(100, Math.max(0, overall));
-
-    bar.style.width = overallClamped.toFixed(1) + '%';
-    pctEl.textContent = overallClamped.toFixed(1) + '%';
-
-    if (s.status === 'downloading') {
-        let lblText = `${plPrefix}正在下载第 ${cur} / ${total} 首（当前首 ${s.percent || '0%'}）`;
-        if (s.eta) {
-            lblText += `  ·  预计剩余 ${s.eta}`;
-        }
-        label.textContent = lblText;
-        detail.textContent = `当前曲目：${s.current_title || ''}`;
-    } else if (s.status === 'finished') {
-        bar.style.width = '100%';
-        pctEl.textContent = '100%';
-        label.textContent = '下载完成！';
-        if (plTotal > 1) {
-            detail.textContent = `共 ${plTotal} 个歌单已全部下载完成，保存在：${s.download_path}`;
-        } else {
-            detail.textContent = `文件保存在：${s.download_path}\\${s.playlist_title}`;
-        }
-        // 显示曲目结果
-        renderTrackResults(s.track_results || []);
-    } else if (s.status === 'cancelled') {
-        label.textContent = '已取消下载';
-        const done = cur - 1 > 0 ? cur - 1 : 0;
-        detail.textContent = `${plPrefix}已完成 ${done} / ${total} 首`;
-    } else if (s.status === 'error') {
-        label.textContent = '下载出错';
-        detail.textContent = s.error || '未知错误';
-        bar.classList.remove('bg-orange-500');
-        bar.classList.add('bg-red-500');
-    }
-}
-
-function renderTrackResults(results) {
-    const container = document.getElementById('trackResults');
-    if (!results || results.length === 0) {
-        container.classList.add('hidden');
-        return;
-    }
-    container.classList.remove('hidden');
-    
-    const okCount = results.filter(r => r.status === 'ok').length;
-    const skippedCount = results.filter(r => r.status === 'skipped').length;
-    const failedCount = results.filter(r => r.status === 'failed').length;
-    
-    let html = '<div class="border-t border-slate-600 pt-3 mt-3">';
-    html += `<div class="text-sm text-slate-300 mb-2">`;
-    html += `<span class="text-green-400">已下载 ${okCount}</span>`;
-    if (skippedCount > 0) html += ` · <span class="text-yellow-400">已跳过 ${skippedCount}</span>`;
-    if (failedCount > 0) html += ` · <span class="text-red-400">无法下载 ${failedCount}</span>`;
-    html += `</div>`;
-    html += '<div class="max-h-80 overflow-y-auto space-y-1">';
-    
-    // 分开显示：先显示无法下载清单，再显示完整列表
-    const failed = results.filter(r => r.status === 'failed');
-    if (failed.length > 0) {
-        html += '<div class="mb-3">';
-        html += '<div class="text-sm text-red-400 mb-1 font-semibold">无法下载（版权/DRM保护）：</div>';
-        html += '<div class="space-y-1 pl-2">';
-        for (const r of failed) {
-            html += `<div class="text-xs text-red-400">${r.index}. ${r.title}</div>`;
-        }
-        html += '</div></div>';
-    }
-    
-    html += '<div>';
-    html += '<div class="text-sm text-slate-300 mb-1">完整曲目列表：</div>';
-    html += '<div class="space-y-1">';
-    for (const r of results) {
-        let icon = '';
-        let rowClass = '';
-        if (r.status === 'ok') {
-            icon = '✓';
-            rowClass = 'text-green-400';
-        } else if (r.status === 'skipped') {
-            icon = '−';
-            rowClass = 'text-yellow-400';
-        } else if (r.status === 'failed') {
-            icon = '✗';
-            rowClass = 'text-red-400';
-        } else {
-            icon = '?';
-            rowClass = 'text-slate-500';
-        }
-        const reason = r.reason ? ` (${r.reason})` : '';
-        html += `<div class="text-xs ${rowClass}">${icon} ${r.index}. ${r.title}${reason}</div>`;
-    }
-    html += '</div></div>';
-    
-    html += '</div></div>';
-    container.innerHTML = html;
-}
-
-window.addEventListener('DOMContentLoaded', loadConfig);
-</script>
-</body>
-</html>
+const $ = id => document.getElementById(id);
+let scanTimer = null, progressTimer = null, scannedInput = null, latestScan = null, running = false, scanRunning = false, audioContext = null;
+async function api(path, method='GET', body) { const r=await fetch(path,{method,headers:{'Content-Type':'application/json'},body:body===undefined?undefined:JSON.stringify(body)}); const data=await r.json(); if(!r.ok) throw Error(data.detail || '请求失败'); return data; }
+function safeLink(url) { try { const u=new URL(url); return ['http:','https:'].includes(u.protocol) ? u.href : null; } catch { return null; } }
+function el(tag, cls, value) { const node=document.createElement(tag); if(cls) node.className=cls; if(value!==undefined) node.textContent=value; return node; }
+function refreshButtons(){ $('scanBtn').disabled=scanRunning||running; $('rescanBtn').disabled=scanRunning||running; $('startBtn').disabled=scanRunning||running||!scannedInput||$('urlInput').value.trim()!==scannedInput; $('cancelScanBtn').classList.toggle('hidden',!scanRunning); }
+$('urlInput').addEventListener('input',()=>{ if(scannedInput && $('urlInput').value.trim()!==scannedInput) $('scanStatus').textContent='链接已更改，请重新扫描。'; refreshButtons(); });
+async function loadConfig(){try{let c=await api('/api/config'); $('pathInput').value=c.default_download_path||''; document.querySelector(`input[name="format"][value="${c.default_format==='mp3'?'mp3':'wav'}"]`).checked=true;}catch(e){$('saveStatus').textContent='无法加载设置：'+e.message;}}
+$('saveBtn').onclick=async()=>{try{await api('/api/config','PUT',{default_download_path:$('pathInput').value.trim(),default_format:document.querySelector('input[name=format]:checked').value});$('saveStatus').textContent='默认设置已保存';}catch(e){$('saveStatus').textContent='保存失败：'+e.message;}};
+async function startScan(){const url=$('urlInput').value.trim(); if(!url){$('scanStatus').textContent='请输入歌单链接。';return;} scannedInput=null; latestScan=null; scanRunning=true; refreshButtons(); $('scanStatus').textContent='正在准备扫描…'; $('scanSection').classList.remove('hidden'); $('scanResults').replaceChildren(); $('scanSummary').replaceChildren(); try{await api('/api/scan/start','POST',{url}); pollScan(url);}catch(e){scanRunning=false; $('scanStatus').textContent=e.message;refreshButtons();}}
+async function pollScan(url){try{const s=await api('/api/scan/progress');renderScan(s); $('scanStatus').textContent=`${s.message} ${s.checked}/${s.total}`; if(s.status==='scanning'){scanTimer=setTimeout(()=>pollScan(url),900);return;} scanRunning=false; latestScan=s; if(s.status==='finished' && s.playlists.length) scannedInput=url; refreshButtons();}catch(e){scanRunning=false; $('scanStatus').textContent='扫描状态获取失败：'+e.message;refreshButtons();}}
+$('scanBtn').onclick=startScan; $('rescanBtn').onclick=startScan; $('cancelScanBtn').onclick=async()=>{try{await api('/api/scan/cancel','POST');$('scanStatus').textContent='正在停止，等待当前请求结束…';}catch(e){$('scanStatus').textContent=e.message;}};
+function renderScan(s){const all=s.playlists.flatMap(p=>p.tracks); const sum=$('scanSummary'); sum.replaceChildren(); for(const [status,label] of [['available','可提取'],['restricted','DRM 受保护'],['unknown','待确认']]) sum.append(el('span','badge '+status,`${label} ${all.filter(t=>t.status===status).length}`)); const root=$('scanResults');root.replaceChildren(); for(const p of s.playlists){const section=el('div','playlist');section.append(el('h3','',p.title)); if(p.error) section.append(el('p','track-state unknown','歌单读取失败：'+p.error)); const list=el('div','tracks');for(const t of p.tracks){const row=el('div','track');row.append(el('span','track-num',String(t.index).padStart(2,'0')));const info=el('div','track-name');const link=safeLink(t.url); if(link){const a=el('a','',t.title);a.href=link;a.target='_blank';a.rel='noopener noreferrer';info.append(a);}else info.append(document.createTextNode(t.title));info.append(el('div','track-reason',t.reason));row.append(info,el('span','track-state '+t.status,({available:'可提取',restricted:'DRM 受保护',unknown:'待确认'})[t.status]||'待确认'));list.append(row);}section.append(list);root.append(section);}}
+$('copyBtn').onclick=async()=>{if(!latestScan)return;const lines=[]; for(const p of latestScan.playlists){if(p.error)lines.push(`${p.title}: ${p.error} ${p.url}`);for(const t of p.tracks.filter(x=>x.status!=='available'))lines.push(`${p.title} #${t.index} ${t.title} — ${t.reason} ${t.url}`);}const text=lines.join('\n')||'没有待处理的曲目';try{await navigator.clipboard.writeText(text);$('scanStatus').textContent='待处理清单已复制。';}catch(e){$('scanStatus').textContent='复制失败，请手动选择检查结果。';}};
+function prepareSound(){try{const C=window.AudioContext||window.webkitAudioContext;if(C){audioContext=audioContext||new C();audioContext.resume().catch(()=>{});}}catch(e){console.warn(e);}}
+function playComplete(){if(!audioContext)return;try{const now=audioContext.currentTime;[523.25,659.25,783.99,1046.5].forEach((freq,i)=>{const osc=audioContext.createOscillator(), gain=audioContext.createGain();osc.type='sine';osc.frequency.value=freq;const t=now+i*.13;gain.gain.setValueAtTime(.0001,t);gain.gain.exponentialRampToValueAtTime(.12,t+.025);gain.gain.exponentialRampToValueAtTime(.0001,t+.5);osc.connect(gain);gain.connect(audioContext.destination);osc.start(t);osc.stop(t+.52);});}catch(e){console.warn(e);}}
+$('startBtn').onclick=async()=>{if(!scannedInput||$('urlInput').value.trim()!==scannedInput)return;const download_path=$('pathInput').value.trim();if(!download_path){alert('请填写下载路径');return;}prepareSound();running=true;refreshButtons();try{await api('/api/download/start','POST',{url:scannedInput,download_path,format:document.querySelector('input[name=format]:checked').value});$('progressSection').classList.remove('hidden');$('trackResults').replaceChildren();$('cancelBtn').disabled=false;pollDownload();}catch(e){running=false;refreshButtons();alert(e.message);}};
+$('cancelBtn').onclick=async()=>{if(confirm('确定取消当前下载？')){try{await api('/api/download/cancel','POST');$('cancelBtn').disabled=true;}catch(e){alert(e.message);}}};
+async function pollDownload(){try{const s=await api('/api/download/progress');renderProgress(s);if(['finished','error','cancelled'].includes(s.status)){running=false;refreshButtons();$('cancelBtn').disabled=true;if(s.status==='finished')playComplete();return;}progressTimer=setTimeout(pollDownload,1000);}catch(e){$('progressDetail').textContent='无法获取进度，正在重试：'+e.message;progressTimer=setTimeout(pollDownload,2000);}}
+function renderProgress(s){const total=s.total_tracks||1, cur=s.current_track||1, pct=parseFloat(s.percent)||0, overall=s.status==='finished'?100:Math.min(100,Math.max(0,((cur-1)+pct/100)/total*100));$('progressBar').style.width=overall+'%';$('progressPercent').textContent=s.status==='parsing'?'扫描中':overall.toFixed(0)+'%';const prefix=s.playlist_total>1?`歌单 ${s.playlist_index}/${s.playlist_total} · `:'';if(s.status==='parsing'){$('progressLabel').textContent=s.message||'正在解析歌单';$('progressDetail').textContent='正在准备下载，请稍候。';}else if(s.status==='downloading'){$('progressLabel').textContent=`${prefix}第 ${cur} / ${total} 首 · ${s.percent}`;$('progressDetail').textContent=`${s.current_title||s.message||''}${s.eta?' · 预计剩余 '+s.eta:''}`;}else if(s.status==='finished'){$('progressLabel').textContent='下载任务已结束';$('progressDetail').textContent=`保存目录：${s.download_path}。请查看下方曲目结果。`;renderDownloadResults(s.track_results||[]);}else if(s.status==='error'){$('progressLabel').textContent='下载出错';$('progressDetail').textContent=s.error||'未知错误';}else if(s.status==='cancelled'){$('progressLabel').textContent='下载已取消';$('progressDetail').textContent='已停止当前任务。';}}
+function renderDownloadResults(results){const root=$('trackResults');root.replaceChildren();if(!results.length)return; const heading=el('div','summary');for(const [status,label] of [['ok','已下载'],['skipped','已存在'],['failed','失败']])heading.append(el('span','badge '+(status==='failed'?'unknown':''),`${label} ${results.filter(r=>r.status===status).length}`));root.append(heading);for(const r of results){const row=el('div','track');row.append(el('span','track-num',String(r.index).padStart(2,'0')),el('span','track-name',(r.playlist_title ? r.playlist_title+' · ' : '')+r.title),el('span','track-state '+(r.status==='failed'?'unknown':''),({ok:'完成',skipped:'已存在',failed:'下载失败'})[r.status]||r.status));root.append(row);}}
+loadConfig();
+</script></body></html>

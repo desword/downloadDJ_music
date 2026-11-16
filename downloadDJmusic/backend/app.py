@@ -10,6 +10,7 @@ from pydantic import BaseModel
 
 from . import config as cfg
 from . import downloader
+from . import scanner
 
 # 项目根目录
 ROOT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -87,6 +88,28 @@ def playlist_info(req: PlaylistInfoRequest) -> Dict[str, Any]:
         return downloader.fetch_playlist_info(url)
     except Exception as e:  # noqa: BLE001
         raise HTTPException(status_code=500, detail=f"解析歌单失败: {e}")
+
+
+@app.post("/api/scan/start")
+def scan_start(req: PlaylistInfoRequest) -> Dict[str, str]:
+    try:
+        scanner.start(req.url)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except RuntimeError as e:
+        raise HTTPException(status_code=409, detail=str(e))
+    return {"status": "started"}
+
+
+@app.get("/api/scan/progress")
+def scan_progress() -> Dict[str, Any]:
+    return scanner.get_state()
+
+
+@app.post("/api/scan/cancel")
+def scan_cancel() -> Dict[str, str]:
+    scanner.cancel()
+    return {"status": "cancelling"}
 
 
 # ---------------- 下载接口 ----------------
