@@ -1,11 +1,15 @@
 """逐曲检查可提取性；只根据明确的服务响应标记 DRM。"""
 import copy
+import json
+import re
 import threading
+import urllib.parse
+import urllib.request
 from typing import Any, Dict
 
 import yt_dlp
 
-from .downloader import _split_urls
+from .downloader import _get_soundcloud_client_id, _split_urls
 
 _lock = threading.Lock()
 _state: Dict[str, Any] = {"status": "idle", "playlists": [], "checked": 0, "total": 0, "message": ""}
@@ -36,6 +40,51 @@ def _entry_url(entry: Dict[str, Any]) -> str:
     if url.isdigit():
         return "https://api-v2.soundcloud.com/tracks/" + url
     return url
+
+
+def _is_title(value: Any) -> bool:
+    return isinstance(value, str) and bool(value.strip()) and not value.strip().isdigit()
+
+
+def _lookup_title(url: str, track_id: Any, active_client_id: Any = None) -> str:
+    """音频提取失败时，独立查询公开元数据；失败时再使用链接名称。"""
+    parsed = urllib.parse.urlsplit(url)
+    host = (parsed.hostname or '').lower()
+    if host not in ('soundcloud.com', 'www.soundcloud.com', 'm.soundcloud.com', 'api-v2.soundcloud.com'):
+        return ''
+    track_id = str(track_id or '')
+    if not track_id.isdigit():
+        match = re.fullmatch(r'/tracks/(\d+)', parsed.path)
+        track_id = match.group(1) if match and host == 'api-v2.soundcloud.com' else ''
+    client_id = (active_client_id or _get_soundcloud_client_id()) if track_id else None
+    if client_id:
+        query = {'client_id': client_id}
+        secret = urllib.parse.parse_qs(parsed.query).get('secret_token')
+        if secret:
+            query['secret_token'] = secret[0]
+        endpoint = 'https://api-v2.soundcloud.com/tracks/' + track_id + '?' + urllib.parse.urlencode(query)
+        try:
+            with urllib.request.urlopen(endpoint, timeout=10) as response:
+                title = json.load(response).get('title')
+            if _is_title(title):
+                return title.strip()
+        except (OSError, ValueError, TypeError, AttributeError):
+            pass
+    if host != 'api-v2.soundcloud.com':
+        endpoint = 'https://soundcloud.com/oembed?' + urllib.parse.urlencode({'format': 'json', 'url': url})
+        try:
+            with urllib.request.urlopen(endpoint, timeout=10) as response:
+                title = json.load(response).get('title')
+            if _is_title(title):
+                return title.strip()
+        except (OSError, ValueError, TypeError, AttributeError):
+            pass
+        parts = [part for part in parsed.path.split('/') if part]
+        if len(parts) >= 2 and parts[1] != 'sets':
+            slug = urllib.parse.unquote(parts[1]).replace('-', ' ').replace('_', ' ').strip()
+            if _is_title(slug):
+                return slug + '（链接名称）'
+    return ''
 
 
 def start(raw_urls: str) -> None:
@@ -74,17 +123,31 @@ def start(raw_urls: str) -> None:
                             break
                         entry = entry or {}
                         track_url = _entry_url(entry)
-                        title = entry.get("title") or entry.get("id") or f"第 {index} 首"
+                        entry_title = entry.get("title")
+                        title = entry_title.strip() if _is_title(entry_title) else ''
                         _set(message=f"正在检查 {playlist['title']} · 第 {index}/{len(entries)} 首")
                         track = {"index": index, "title": title, "url": track_url,
                                  "status": "unknown", "reason": "无法获取曲目链接"}
+                        active_client_id = None
                         if track_url:
                             try:
                                 with yt_dlp.YoutubeDL({**opts, "noplaylist": True}) as ydl:
-                                    detail = ydl.extract_info(track_url, download=False)
+                                    try:
+                                        detail = ydl.extract_info(track_url, download=False)
+                                    finally:
+                                        # 即使音频提取因 DRM 失败，提取器也可能已取得有效的 client_id。
+                                        if hasattr(ydl, 'get_info_extractor') and 'soundcloud.com' in (urllib.parse.urlsplit(track_url).hostname or '').lower():
+                                            try:
+                                                extractor = ydl.get_info_extractor('Soundcloud')
+                                                active_client_id = getattr(extractor, '_CLIENT_ID', None)
+                                            except Exception:
+                                                pass
                                 if not detail:
                                     raise ValueError("服务未返回曲目信息")
-                                track["title"] = detail.get("title") or title
+                                detail_title = detail.get("title")
+                                if _is_title(detail_title):
+                                    track["title"] = detail_title.strip()
+                                track["url"] = detail.get("webpage_url") or track_url
                                 if detail.get("has_drm") is True:
                                     track.update(status="restricted", reason="服务明确提示受 DRM 保护")
                                 elif detail.get("formats") or detail.get("url"):
@@ -93,6 +156,8 @@ def start(raw_urls: str) -> None:
                                     track.update(status="unknown", reason="未获取到可用音频信息")
                             except Exception as exc:
                                 track["status"], track["reason"] = _reason(exc)
+                        if not track['title']:
+                            track['title'] = _lookup_title(track['url'], entry.get('id') or entry_title, active_client_id) or f'未获取歌曲名称（第 {index} 首）'
                         with _lock:
                             playlist["tracks"].append(track)
                             _state["checked"] += 1

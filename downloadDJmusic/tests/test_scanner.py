@@ -1,6 +1,7 @@
 import time
 import tempfile
 import unittest
+import io
 from pathlib import Path
 from unittest.mock import patch
 
@@ -63,6 +64,36 @@ class ScanTests(unittest.TestCase):
                     break
                 time.sleep(.01)
         self.assertIn('403', state['playlists'][0]['error'])
+
+    def test_numeric_title_uses_public_metadata_when_audio_restricted(self):
+        class RestrictedYDL(FakeYDL):
+            def extract_info(self, url, download=False):
+                if url == 'playlist':
+                    return {'title': 'Set', 'entries': [{'id': '2391881370', 'title': '2391881370', 'url': 'https://soundcloud.com/welkermusic/hot-girl-walk'}]}
+                raise Exception('This video is DRM protected')
+
+        with patch.object(scanner.yt_dlp, 'YoutubeDL', RestrictedYDL), \
+             patch.object(scanner, '_get_soundcloud_client_id', return_value='client'), \
+             patch.object(scanner.urllib.request, 'urlopen', return_value=io.BytesIO(b'{"title":"Hot Girl Walk (Original Mix)"}')):
+            scanner.start('playlist')
+            for _ in range(100):
+                state = scanner.get_state()
+                if state['status'] != 'scanning':
+                    break
+                time.sleep(.01)
+        track = state['playlists'][0]['tracks'][0]
+        self.assertEqual(track['title'], 'Hot Girl Walk (Original Mix)')
+        self.assertEqual(track['status'], 'restricted')
+
+    def test_title_fallback_labels_link_name(self):
+        with patch.object(scanner, '_get_soundcloud_client_id', return_value=None), \
+             patch.object(scanner.urllib.request, 'urlopen', side_effect=OSError('offline')):
+            title = scanner._lookup_title('https://soundcloud.com/welkermusic/hot-girl-walk', '2391881370')
+        self.assertEqual(title, 'hot girl walk（链接名称）')
+
+    def test_numeric_id_without_metadata_does_not_appear_as_title(self):
+        with patch.object(scanner, '_get_soundcloud_client_id', return_value=None):
+            self.assertEqual(scanner._lookup_title('https://api-v2.soundcloud.com/tracks/2391881370', '2391881370'), '')
 
     def test_replaced_track_with_same_index_is_downloaded(self):
         class ReplacementYDL:
