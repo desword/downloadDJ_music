@@ -11,7 +11,8 @@ CONFIG_FILE = os.path.join(
 
 # 默认配置
 DEFAULT_CONFIG: Dict[str, Any] = {
-    "default_download_path": r"D:\Music\SoundCloud",
+    "default_download_path": (r"D:\Music\SoundCloud" if os.name == "nt"
+                              else os.path.expanduser("~/Music/SoundCloud")),
     "default_format": "wav",
     "sleep_interval": 2,
 }
@@ -29,6 +30,9 @@ def load_config() -> Dict[str, Any]:
         # 合并默认值，确保新增字段有默认值
         merged = DEFAULT_CONFIG.copy()
         merged.update(config)
+        # 旧版随仓库附带 Windows 默认路径，不能直接在 macOS 上使用。
+        if os.name != "nt" and merged["default_download_path"] == r"D:\Music\SoundCloud":
+            merged["default_download_path"] = DEFAULT_CONFIG["default_download_path"]
         return merged
     except (json.JSONDecodeError, OSError):
         return DEFAULT_CONFIG.copy()

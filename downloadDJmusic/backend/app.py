@@ -104,16 +104,19 @@ def download_start(req: DownloadStartRequest) -> Dict[str, Any]:
     if downloader.is_running():
         raise HTTPException(status_code=409, detail="已有下载任务正在运行")
 
+    download_path = os.path.expanduser(req.download_path.strip())
+    if not os.path.isabs(download_path):
+        raise HTTPException(status_code=400, detail="请使用绝对路径")
     # 确保下载根目录存在
     try:
-        os.makedirs(req.download_path, exist_ok=True)
+        os.makedirs(download_path, exist_ok=True)
     except OSError as e:
         raise HTTPException(status_code=400, detail=f"无法创建下载目录: {e}")
 
     try:
         downloader.start_download(
             url,
-            req.download_path,
+            download_path,
             req.format,
             playlist_title=req.playlist_title or "",
             track_count=req.track_count or 0,
@@ -139,7 +142,7 @@ def download_cancel() -> Dict[str, Any]:
 
 @app.post("/api/path/validate")
 def path_validate(req: PathValidateRequest) -> Dict[str, Any]:
-    p = (req.path or "").strip()
+    p = os.path.expanduser((req.path or "").strip())
     if not p:
         return {"valid": False, "reason": "路径不能为空"}
     if not os.path.isabs(p):

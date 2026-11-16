@@ -2,6 +2,7 @@
 import json
 import os
 import re
+import shutil
 import time
 import threading
 import urllib.request
@@ -312,10 +313,11 @@ def start_download(
                 "noprogress": True,
                 "ignoreerrors": True,
             }
-            if os.path.isdir(BIN_DIR) and os.path.exists(
-                os.path.join(BIN_DIR, "ffmpeg.exe")
-            ):
+            binary = "ffmpeg.exe" if os.name == "nt" else "ffmpeg"
+            if os.path.isfile(os.path.join(BIN_DIR, binary)):
                 base_opts["ffmpeg_location"] = BIN_DIR
+            elif not shutil.which("ffmpeg") or not shutil.which("ffprobe"):
+                raise RuntimeError("未找到 ffmpeg 或 ffprobe，请先运行安装脚本，或安装 FFmpeg 并确保它在 PATH 中")
 
             # 外层循环：逐个歌单
             for pl_idx, pl_url in enumerate(urls, start=1):
@@ -363,11 +365,9 @@ def start_download(
                 pl_dir_path = os.path.join(download_path, playlist_dir)
                 if os.path.isdir(pl_dir_path):
                     for fname in os.listdir(pl_dir_path):
-                        if len(fname) >= 4 and fname[3] == ' ':
-                            try:
-                                existing_prefixes.add(int(fname[:3]))
-                            except ValueError:
-                                pass
+                        match = re.match(r"^(\d{3,}) - .+\." + re.escape(fmt) + r"$", fname, re.IGNORECASE)
+                        if match:
+                            existing_prefixes.add(int(match.group(1)))
 
                 # full 提取获取曲目标题（ignoreerrors 让 DRM 曲目返回 None）
                 full_extract_opts: Dict[str, Any] = {
@@ -444,7 +444,8 @@ def start_download(
                 output_template = os.path.join(
                     download_path,
                     playlist_dir,
-                    "%(playlist_index)03d - %(title)s.%(ext)s",
+                    ("001 - %(title)s.%(ext)s" if total == 1
+                     else "%(playlist_index)03d - %(title)s.%(ext)s"),
                 )
 
                 # ETA 统计：记录每首完成时间，估算总剩余时间
@@ -520,7 +521,7 @@ def start_download(
                     if tr["status"] in ("pending", "unknown"):
                         idx = tr["index"]
                         prefix = f"{idx:03d} - "
-                        found = any(f.startswith(prefix) for f in existing_files)
+                        found = any(f.startswith(prefix) and f.lower().endswith("." + fmt) for f in existing_files)
                         if found:
                             tr["status"] = "ok"
                             tr["reason"] = ""
