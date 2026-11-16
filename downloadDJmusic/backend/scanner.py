@@ -13,12 +13,19 @@ from .downloader import _get_soundcloud_client_id, _split_urls
 
 _lock = threading.Lock()
 _state: Dict[str, Any] = {"status": "idle", "playlists": [], "checked": 0, "total": 0, "message": ""}
+# 提取出的媒体链接可能是临时签名地址，只保留在服务端内存中。
+_download_plan = []
 _cancel = threading.Event()
 
 
 def get_state() -> Dict[str, Any]:
     with _lock:
         return copy.deepcopy(_state)
+
+
+def get_download_plan() -> list:
+    with _lock:
+        return copy.deepcopy(_download_plan)
 
 
 def _set(**values: Any) -> None:
@@ -96,6 +103,7 @@ def start(raw_urls: str) -> None:
             raise RuntimeError("已有扫描正在进行")
         _cancel.clear()
         _state.update(status="scanning", playlists=[], checked=0, total=0, message="正在读取歌单…")
+        _download_plan.clear()
 
     def worker() -> None:
         opts = {"quiet": True, "no_warnings": True, "skip_download": True,
@@ -104,6 +112,8 @@ def start(raw_urls: str) -> None:
             for url in urls:
                 if _cancel.is_set():
                     break
+                playlist = None
+                private_playlist = None
                 try:
                     with yt_dlp.YoutubeDL({**opts, "extract_flat": "in_playlist"}) as ydl:
                         info = ydl.extract_info(url, download=False)
@@ -111,12 +121,14 @@ def start(raw_urls: str) -> None:
                         raise ValueError("未返回歌单信息")
                     entries = info.get("entries")
                     if entries is None:
-                        entries = [{"url": url, "title": info.get("title")}]
+                        entries = [{"url": url, "title": info.get("title"), "id": info.get("id"), "_single_info": info}]
                     else:
                         entries = list(entries)
                     playlist = {"title": info.get("title") or "未命名歌单", "url": url, "tracks": []}
+                    private_playlist = {"title": playlist["title"], "url": url, "tracks": []}
                     with _lock:
                         _state["playlists"].append(playlist)
+                        _download_plan.append(private_playlist)
                         _state["total"] += len(entries)
                     for index, entry in enumerate(entries, 1):
                         if _cancel.is_set():
@@ -129,24 +141,29 @@ def start(raw_urls: str) -> None:
                         track = {"index": index, "title": title, "url": track_url,
                                  "status": "unknown", "reason": "无法获取曲目链接"}
                         active_client_id = None
+                        detail = None
+                        title_from_metadata = bool(title)
                         if track_url:
                             try:
-                                with yt_dlp.YoutubeDL({**opts, "noplaylist": True}) as ydl:
-                                    try:
-                                        detail = ydl.extract_info(track_url, download=False)
-                                    finally:
-                                        # 即使音频提取因 DRM 失败，提取器也可能已取得有效的 client_id。
-                                        if hasattr(ydl, 'get_info_extractor') and 'soundcloud.com' in (urllib.parse.urlsplit(track_url).hostname or '').lower():
-                                            try:
-                                                extractor = ydl.get_info_extractor('Soundcloud')
-                                                active_client_id = getattr(extractor, '_CLIENT_ID', None)
-                                            except Exception:
-                                                pass
+                                detail = entry.get('_single_info')
+                                if detail is None:
+                                    with yt_dlp.YoutubeDL({**opts, "noplaylist": True}) as ydl:
+                                        try:
+                                            detail = ydl.extract_info(track_url, download=False)
+                                        finally:
+                                            # 即使音频提取因 DRM 失败，提取器也可能已取得有效的 client_id。
+                                            if hasattr(ydl, 'get_info_extractor') and 'soundcloud.com' in (urllib.parse.urlsplit(track_url).hostname or '').lower():
+                                                try:
+                                                    extractor = ydl.get_info_extractor('Soundcloud')
+                                                    active_client_id = getattr(extractor, '_CLIENT_ID', None)
+                                                except Exception:
+                                                    pass
                                 if not detail:
                                     raise ValueError("服务未返回曲目信息")
                                 detail_title = detail.get("title")
                                 if _is_title(detail_title):
                                     track["title"] = detail_title.strip()
+                                    title_from_metadata = True
                                 track["url"] = detail.get("webpage_url") or track_url
                                 if detail.get("has_drm") is True:
                                     track.update(status="restricted", reason="服务明确提示受 DRM 保护")
@@ -160,10 +177,30 @@ def start(raw_urls: str) -> None:
                             track['title'] = _lookup_title(track['url'], entry.get('id') or entry_title, active_client_id) or f'未获取歌曲名称（第 {index} 首）'
                         with _lock:
                             playlist["tracks"].append(track)
+                            private_playlist['tracks'].append({**track, 'id': (detail or {}).get('id') or entry.get('id'),
+                                                              'source_url': track_url, 'info': detail if track['status'] == 'available' else None,
+                                                              'trusted_title': title_from_metadata})
                             _state["checked"] += 1
                 except Exception as exc:
+                    status, reason = _reason(exc)
+                    is_single = '/sets/' not in urllib.parse.urlsplit(url).path
+                    if playlist is None and status == 'restricted' and is_single:
+                        name = _lookup_title(url, None) or '未获取歌曲名称（第 1 首）'
+                        track = {'index': 1, 'title': name, 'url': url, 'status': status, 'reason': reason}
+                        with _lock:
+                            _state['playlists'].append({'title': name, 'url': url, 'tracks': [track]})
+                            _download_plan.append({'title': name, 'url': url, 'tracks': [{**track, 'id': None,
+                                                   'source_url': url, 'info': None, 'trusted_title': False}]})
+                            _state['total'] += 1
+                            _state['checked'] += 1
+                        continue
                     with _lock:
-                        _state["playlists"].append({"title": "歌单读取失败", "url": url, "tracks": [], "error": str(exc)[:400]})
+                        if playlist is None or private_playlist is None:
+                            _state["playlists"].append({"title": "歌单读取失败", "url": url, "tracks": [], "error": str(exc)[:400]})
+                            _download_plan.append({"title": "歌单读取失败", "url": url, "tracks": [], "error": str(exc)[:400]})
+                        else:
+                            playlist['error'] = str(exc)[:400]
+                            private_playlist['error'] = str(exc)[:400]
             _set(status="cancelled" if _cancel.is_set() else "finished", message="扫描已取消" if _cancel.is_set() else "扫描完成，请检查结果")
         except Exception as exc:
             _set(status="error", message=str(exc))

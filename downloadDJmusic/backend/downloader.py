@@ -1,4 +1,5 @@
 """下载核心逻辑模块：封装 yt-dlp 调用，支持歌单解析与批量下载。"""
+import copy
 import json
 import math
 import os
@@ -326,6 +327,7 @@ def start_download(
     playlist_title: str = "",
     track_count: int = 0,
     scan_total_tracks: Optional[int] = None,
+    scan_plan: Optional[List[Dict[str, Any]]] = None,
 ) -> None:
     """在后台线程中启动下载任务。立即返回，进度通过 get_state() 查询。
 
@@ -345,6 +347,12 @@ def start_download(
     urls = _split_urls(url)
     if not urls:
         raise RuntimeError("未提供有效的歌单链接")
+
+    if scan_plan is not None:
+        if [p.get('url') for p in scan_plan] != urls:
+            raise RuntimeError("扫描结果与歌单链接不一致，请重新开始")
+        _start_scanned_download(scan_plan, download_path, audio_format)
+        return
 
     _cancel_flag.clear()
     reset_state()
@@ -671,6 +679,168 @@ def start_download(
             _update_state(status="error", error=str(e))
 
     _download_thread = threading.Thread(target=_worker, daemon=True)
+    _download_thread.start()
+
+
+def _start_scanned_download(plan: List[Dict[str, Any]], download_path: str, audio_format: str) -> None:
+    """复用扫描时的曲目信息；仅对无法提取或过期的单曲重新请求。"""
+    global _download_thread
+    reset_state()
+    _update_state(download_path=download_path, playlist_total=len(plan), status='downloading')
+    sleep_interval = int(cfg.load_config().get('sleep_interval', 2))
+
+    def worker() -> None:
+        try:
+            fmt = audio_format.lower()
+            if fmt not in ('mp3', 'wav'):
+                raise ValueError('音频格式仅支持 wav 或 mp3')
+            binary = 'ffmpeg.exe' if os.name == 'nt' else 'ffmpeg'
+            ffmpeg_dir = BIN_DIR if os.path.isfile(os.path.join(BIN_DIR, binary)) else None
+            if not ffmpeg_dir and (not shutil.which('ffmpeg') or not shutil.which('ffprobe')):
+                raise RuntimeError('未找到 ffmpeg 或 ffprobe，请先运行安装脚本')
+            results: List[Dict[str, Any]] = []
+            remaining = sum(1 for p in plan for t in p.get('tracks', [])
+                            if t.get('status') != 'restricted' and t.get('source_url'))
+            completed = 0
+            first_transfer = None
+            completed_elapsed = 0.0
+            for pl_idx, playlist in enumerate(plan, 1):
+                _check_cancel()
+                title = playlist.get('title') or '未知歌单'
+                tracks = playlist.get('tracks') or []
+                count = len(tracks)
+                _update_state(playlist_index=pl_idx, playlist_title=title, total_tracks=count,
+                              current_track=0, percent='0%', current_title='',
+                              track_eta_seconds=None, total_eta_seconds=None)
+                if playlist.get('error'):
+                    results.append({'index': 1, 'title': title, 'playlist_title': title,
+                                    'status': 'failed', 'reason': playlist['error']})
+                    _update_state(track_results=results)
+                    continue
+                folder = os.path.join(download_path, _sanitize_filename(title))
+                files = set(os.listdir(folder)) if os.path.isdir(folder) else set()
+                download_index = _load_download_index(folder)
+                title_counts: Dict[str, int] = {}
+                for item in tracks:
+                    if item.get('trusted_title') and item.get('title'):
+                        title_counts[item['title']] = title_counts.get(item['title'], 0) + 1
+
+                for item in tracks:
+                    _check_cancel()
+                    idx = item['index']
+                    name = item.get('title') or f'第 {idx} 首'
+                    result = {'index': idx, 'title': name, 'playlist_title': title, 'status': 'pending', 'reason': ''}
+                    results.append(result)
+                    _update_state(track_results=results, current_track=idx, current_title=name,
+                                  percent='0%', track_eta_seconds=None, total_eta_seconds=None,
+                                  status='downloading', message=f'正在处理第 {idx}/{count} 首')
+                    if item.get('status') == 'restricted':
+                        result.update(status='restricted', reason=item.get('reason') or '受保护')
+                        _update_state(track_results=results)
+                        continue
+                    source = item.get('source_url') or ''
+                    if not source:
+                        result.update(status='failed', reason='无法获取曲目链接')
+                        _update_state(track_results=results)
+                        continue
+                    track_id = str(item.get('id') or '')
+                    key = f'{fmt}:{track_id}' if track_id else ''
+                    found = download_index.get(key, '')
+                    found = found if found in files else ''
+                    if not found and item.get('trusted_title') and title_counts.get(name) == 1:
+                        suffix = ' - ' + yt_dlp.utils.sanitize_filename(name) + '.' + fmt
+                        candidates = [f for f in files if re.match(r'^\d{3,} - ', f) and f.endswith(suffix)
+                                      and not any(v == f and k != key for k, v in download_index.items())]
+                        if len(candidates) == 1:
+                            found = candidates[0]
+                    if found:
+                        if key:
+                            download_index[key] = found
+                            _save_download_index(folder, download_index)
+                        result.update(status='skipped', reason='已存在')
+                        remaining -= 1
+                        _update_state(track_results=results)
+                        continue
+
+                    observed_title = name
+                    def progress_hook(data: Dict[str, Any]) -> None:
+                        nonlocal first_transfer, completed, completed_elapsed, observed_title
+                        _check_cancel()
+                        info = data.get('info_dict') or {}
+                        observed_title = info.get('title') or observed_title
+                        if data.get('status') == 'downloading':
+                            if first_transfer is None:
+                                first_transfer = time.monotonic()
+                            pct = re.sub(r'\x1b\[[0-9;]*[A-Za-z]', '', data.get('_percent_str') or '0%').strip()
+                            track_eta, total_eta = _estimate_remaining(data, completed, completed_elapsed, remaining)
+                            _update_state(percent=pct, current_title=observed_title, current_track=idx,
+                                          track_eta_seconds=track_eta, total_eta_seconds=total_eta,
+                                          eta=_format_eta(track_eta) if track_eta is not None else '')
+                        elif data.get('status') == 'finished':
+                            _update_state(percent='100%', track_eta_seconds=None, total_eta_seconds=None, eta='')
+
+                    def postprocessor_hook(data: Dict[str, Any]) -> None:
+                        if data.get('status') != 'finished' or data.get('postprocessor') != 'FFmpegMetadata':
+                            return
+                        info = data.get('info_dict') or {}
+                        path = info.get('filepath') or ''
+                        actual_id = info.get('id') or track_id
+                        if actual_id and os.path.isfile(path) and os.path.dirname(os.path.abspath(path)) == os.path.abspath(folder) and path.lower().endswith('.' + fmt):
+                            download_index[f'{fmt}:{actual_id}'] = os.path.basename(path)
+                            _save_download_index(folder, download_index)
+
+                    opts: Dict[str, Any] = {
+                        'format': 'bestaudio/best', 'quiet': True, 'no_warnings': True, 'noprogress': True,
+                        'noplaylist': True, 'sleep_interval': sleep_interval,
+                        'postprocessors': [{'key': 'FFmpegExtractAudio', 'preferredcodec': fmt,
+                                            'preferredquality': '0' if fmt == 'wav' else '192'},
+                                           {'key': 'FFmpegMetadata'}],
+                        'outtmpl': os.path.join(folder, f'{idx:03d} - %(title)s.%(ext)s'),
+                        'progress_hooks': [progress_hook], 'postprocessor_hooks': [postprocessor_hook],
+                    }
+                    if ffmpeg_dir:
+                        opts['ffmpeg_location'] = ffmpeg_dir
+                    try:
+                        with yt_dlp.YoutubeDL(opts) as ydl:
+                            cached = item.get('info')
+                            if cached:
+                                try:
+                                    ydl.process_ie_result(copy.deepcopy(cached), download=True)
+                                except yt_dlp.utils.DownloadError as exc:
+                                    if not any(code in str(exc).lower() for code in ('403', '401', '410', 'expired')):
+                                        raise
+                                    _check_cancel()
+                                    ydl.extract_info(source, download=True)
+                            else:
+                                ydl.extract_info(source, download=True)
+                        _check_cancel()
+                        files = set(os.listdir(folder)) if os.path.isdir(folder) else set()
+                        expected = f'{idx:03d} - ' + yt_dlp.utils.sanitize_filename(observed_title) + '.' + fmt
+                        if expected not in files:
+                            raise RuntimeError('未找到转换后的音频文件')
+                        result.update(status='ok', title=observed_title, reason='')
+                        if key:
+                            download_index[key] = expected
+                            _save_download_index(folder, download_index)
+                    except DownloadCancelled:
+                        raise
+                    except Exception as exc:
+                        _check_cancel()
+                        result.update(status='failed', reason=str(exc)[:300] or '下载失败')
+                    finally:
+                        remaining -= 1
+                        if first_transfer is not None:
+                            completed += 1
+                            completed_elapsed = time.monotonic() - first_transfer
+                    _update_state(track_results=results)
+            _check_cancel()
+            _update_state(status='finished', percent='100%', track_eta_seconds=0, total_eta_seconds=0)
+        except DownloadCancelled:
+            _update_state(status='cancelled', track_eta_seconds=None, total_eta_seconds=None)
+        except Exception as exc:
+            _update_state(status='error', error=str(exc), track_eta_seconds=None, total_eta_seconds=None)
+
+    _download_thread = threading.Thread(target=worker, daemon=True)
     _download_thread.start()
 
 
