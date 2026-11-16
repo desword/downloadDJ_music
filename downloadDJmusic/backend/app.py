@@ -21,6 +21,11 @@ FRONTEND_DIR = os.path.join(ROOT_DIR, "frontend")
 
 app = FastAPI(title="SoundCloud 歌单下载器", version="1.0.0")
 
+
+@app.get("/api/health")
+def health() -> Dict[str, str]:
+    return {"application": "DJ Deck", "status": "ready"}
+
 # 允许本地前端跨域访问
 app.add_middleware(
     CORSMiddleware,

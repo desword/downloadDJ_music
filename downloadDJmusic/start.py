@@ -17,6 +17,7 @@ def main() -> None:
 
     # 提前提示端口冲突，避免打开已有的其他服务。
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
+        probe.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         try:
             probe.bind((HOST, PORT))
         except OSError:
